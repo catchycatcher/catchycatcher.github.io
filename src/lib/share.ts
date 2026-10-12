@@ -81,6 +81,45 @@ export type Resolution =
 	| { status: 'error'; message: string }
 	| { status: 'prompt' };
 
+/** A parsed input plus where it came from, so the caller can also persist it. */
+export type ParamInput =
+	| { kind: 'input'; input: ShareInput; url: string; source: string }
+	| { kind: 'error'; message: string }
+	| { kind: 'none' };
+
+/**
+ * Like {@link resolveFromParams}, but keeps the parsed {@link ShareInput} so the
+ * caller can save the code (not just the resolved url) for next time.
+ *
+ * Order of precedence: `?url=` > `?share_code=` > nothing.
+ */
+export function inputFromParams(params: SearchParamsLike): ParamInput {
+	const rawUrl = firstParam(params, URL_PARAMS);
+	if (rawUrl) {
+		const parsed = parseShareInput(rawUrl);
+		if (parsed.kind === 'invalid') {
+			return { kind: 'error', message: `Invalid \`url\` parameter: ${parsed.message}` };
+		}
+		return { kind: 'input', input: parsed, url: toApiUrl(parsed), source: 'the ?url parameter' };
+	}
+
+	const rawCode = firstParam(params, SHARE_CODE_PARAMS);
+	if (rawCode) {
+		const parsed = parseShareInput(rawCode);
+		if (parsed.kind === 'invalid') {
+			return { kind: 'error', message: `Invalid \`share_code\` parameter: ${parsed.message}` };
+		}
+		return {
+			kind: 'input',
+			input: parsed,
+			url: toApiUrl(parsed),
+			source: 'the ?share_code parameter'
+		};
+	}
+
+	return { kind: 'none' };
+}
+
 /**
  * Work out the API url from a query string.
  *
@@ -88,24 +127,11 @@ export type Resolution =
  * Pure — the caller decides whether to store the result.
  */
 export function resolveFromParams(params: SearchParamsLike): Resolution {
-	const rawUrl = firstParam(params, URL_PARAMS);
-	if (rawUrl) {
-		const parsed = parseShareInput(rawUrl);
-		if (parsed.kind === 'invalid') {
-			return { status: 'error', message: `Invalid \`url\` parameter: ${parsed.message}` };
-		}
-		return { status: 'ready', url: toApiUrl(parsed), source: 'the ?url parameter' };
+	const result = inputFromParams(params);
+	if (result.kind === 'error') return { status: 'error', message: result.message };
+	if (result.kind === 'input') {
+		return { status: 'ready', url: result.url, source: result.source };
 	}
-
-	const rawCode = firstParam(params, SHARE_CODE_PARAMS);
-	if (rawCode) {
-		const parsed = parseShareInput(rawCode);
-		if (parsed.kind === 'invalid') {
-			return { status: 'error', message: `Invalid \`share_code\` parameter: ${parsed.message}` };
-		}
-		return { status: 'ready', url: toApiUrl(parsed), source: 'the ?share_code parameter' };
-	}
-
 	return { status: 'prompt' };
 }
 
