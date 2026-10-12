@@ -68,30 +68,31 @@
 <svelte:head>
 	<title>CatchyCatcher</title>
 	<meta name="description" content="CatchyCatcher — connect to your audio API." />
+	<meta name="theme-color" content="#ffffff" />
 </svelte:head>
 
-<main class="grid min-h-dvh place-items-center bg-black px-6 text-white">
+<main class="grid min-h-dvh place-items-center bg-white px-6 text-neutral-900">
 	<div class="w-full max-w-md">
 		{#if !ready}
-			<p class="text-center text-sm text-white/40">Loading…</p>
+			<p class="text-center text-sm text-neutral-400">Loading…</p>
 		{:else if connection.status === 'checking'}
 			<div class="space-y-3 text-center">
 				<div
-					class="mx-auto size-8 animate-spin rounded-full border-2 border-white/20 border-t-white"
+					class="mx-auto size-8 animate-spin rounded-full border-2 border-neutral-200 border-t-neutral-900"
 				></div>
-				<p class="text-sm text-white/50">Connecting…</p>
+				<p class="text-sm text-neutral-500">Connecting…</p>
 			</div>
 		{:else if api.url}
 			<div class="space-y-6">
 				<div class="space-y-1 text-center">
 					<h1 class="text-2xl font-semibold tracking-tight">Connected</h1>
-					<p class="text-sm text-white/50">
+					<p class="text-sm text-neutral-500">
 						API url resolved from {connection.source || 'your share code'}.
 					</p>
 				</div>
 
 				<p
-					class="rounded-lg border border-white/10 bg-white/5 px-4 py-3 font-mono text-xs break-all text-emerald-300"
+					class="rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3 font-mono text-xs break-all text-emerald-600"
 				>
 					{api.url}
 				</p>
@@ -100,40 +101,42 @@
 					<button
 						onclick={startNewSession}
 						disabled={connection.busy}
-						class="flex-1 rounded-lg bg-white px-4 py-3 text-sm font-medium text-black hover:bg-white/90 disabled:cursor-not-allowed disabled:opacity-60"
+						class="flex-1 rounded-lg bg-neutral-900 px-4 py-3 text-sm font-medium text-white hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-60"
 					>
 						{connection.busy ? 'Creating…' : 'New session'}
 					</button>
 					<button
 						onclick={handleDisconnect}
-						class="flex-1 rounded-lg border border-white/15 px-4 py-3 text-sm text-white/80 hover:bg-white/5"
+						class="flex-1 rounded-lg border border-neutral-300 px-4 py-3 text-sm text-neutral-700 hover:bg-neutral-100"
 					>
 						Disconnect
 					</button>
 				</div>
 
 				{#if connection.error}
-					<p class="text-center text-xs text-red-400">{connection.error}</p>
+					<p class="text-center text-xs text-red-600">{connection.error}</p>
 				{:else if connection.activeSession}
-					<p class="text-center text-xs text-emerald-300">
+					<p class="text-center text-xs text-emerald-600">
 						{connection.activeSession} is ready for takes.
 					</p>
 				{/if}
 
 				<section class="space-y-3">
 					<div class="flex items-center justify-between">
-						<h2 class="text-xs font-medium tracking-wide text-white/60 uppercase">Sessions</h2>
+						<h2 class="text-xs font-medium tracking-wide text-neutral-500 uppercase">Sessions</h2>
 						<button
 							onclick={refreshSessions}
 							disabled={connection.sessionsStatus === 'loading'}
-							class="text-xs text-white/50 hover:text-white disabled:opacity-50"
+							class="text-xs text-neutral-500 hover:text-neutral-900 disabled:opacity-50"
 						>
 							Refresh
 						</button>
 					</div>
 
 					{#if sessions.length === 0}
-						<p class="rounded-lg border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/40">
+						<p
+							class="rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-400"
+						>
 							{connection.sessionsStatus === 'loading'
 								? 'Loading…'
 								: 'No sessions yet. Create one to get started.'}
@@ -142,12 +145,12 @@
 						<ul class="space-y-2">
 							{#each sessions as session (session)}
 								<li
-									class="flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-white/5 px-4 py-3"
+									class="flex items-center justify-between gap-3 rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3"
 								>
-									<span class="font-mono text-xs break-all text-white/80">{session}</span>
+									<span class="font-mono text-xs break-all text-neutral-700">{session}</span>
 									{#if session === connection.activeSession}
 										<span
-											class="shrink-0 rounded-full bg-emerald-400/15 px-2 py-0.5 text-[10px] tracking-wide text-emerald-300 uppercase"
+											class="shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] tracking-wide text-emerald-700 uppercase"
 										>
 											ready
 										</span>
@@ -162,18 +165,18 @@
 			<div class="space-y-6">
 				<div class="space-y-2 text-center">
 					<h1 class="text-3xl font-semibold tracking-tight">CatchyCatcher</h1>
-					<p class="text-sm text-white/50">
+					<p class="text-sm text-neutral-500">
 						Enter the share code for your Gradio app to get started.
 					</p>
 				</div>
 
 				{#if connection.notice}
-					<div class="space-y-2 rounded-lg border border-amber-400/30 bg-amber-400/10 px-4 py-3">
-						<p class="text-xs text-amber-200">{connection.notice}</p>
+					<div class="space-y-2 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3">
+						<p class="text-xs text-amber-800">{connection.notice}</p>
 						{#if connection.saved}
 							<button
 								onclick={retry}
-								class="text-xs font-medium text-amber-200 underline underline-offset-2 hover:text-amber-100"
+								class="text-xs font-medium text-amber-700 underline underline-offset-2 hover:text-amber-900"
 							>
 								Try again
 							</button>
@@ -185,7 +188,7 @@
 					<div class="space-y-2">
 						<label
 							for="share-code"
-							class="block text-xs font-medium tracking-wide text-white/60 uppercase"
+							class="block text-xs font-medium tracking-wide text-neutral-500 uppercase"
 						>
 							Share code
 						</label>
@@ -199,22 +202,22 @@
 							placeholder="e.g. zz4k1q"
 							bind:this={inputEl}
 							bind:value={input}
-							class="w-full rounded-lg border border-white/15 bg-white/5 px-4 py-3 font-mono text-sm text-white placeholder:text-white/25 focus:border-white/40 focus:ring-2 focus:ring-white/10 focus:outline-none"
+							class="w-full rounded-lg border border-neutral-300 bg-white px-4 py-3 font-mono text-sm text-neutral-900 placeholder:text-neutral-400 focus:border-neutral-500 focus:ring-2 focus:ring-neutral-200 focus:outline-none"
 						/>
 						{#if error}
-							<p class="text-xs text-red-400">{error}</p>
+							<p class="text-xs text-red-600">{error}</p>
 						{/if}
 					</div>
 
 					<button
 						type="submit"
 						disabled={submitting}
-						class="w-full rounded-lg bg-white px-4 py-3 text-sm font-medium text-black hover:bg-white/90 disabled:cursor-not-allowed disabled:opacity-60"
+						class="w-full rounded-lg bg-neutral-900 px-4 py-3 text-sm font-medium text-white hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-60"
 					>
 						{submitting ? 'Connecting…' : 'Connect'}
 					</button>
 
-					<p class="text-center text-xs text-white/30">
+					<p class="text-center text-xs text-neutral-400">
 						Or add <code class="font-mono">?share_code=…</code> or
 						<code class="font-mono">?url=…</code> to the address bar to skip this prompt.
 					</p>
