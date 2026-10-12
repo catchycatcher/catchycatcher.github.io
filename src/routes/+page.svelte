@@ -6,13 +6,16 @@
 	import {
 		bootstrap,
 		connection,
+		deleteSession,
 		disconnect,
 		establish,
 		refreshSessions,
+		renameSession,
 		retry,
 		startNewSession
 	} from '#lib/connection.svelte.ts';
 	import { parseShareInput, toHref } from '#lib/share.ts';
+	import type { Session } from '#lib/session.ts';
 
 	/** False until the query string has been read in the browser. */
 	let ready = $state(false);
@@ -20,6 +23,12 @@
 	let error = $state<string | null>(null);
 	let submitting = $state(false);
 	let inputEl = $state<HTMLInputElement | null>(null);
+
+	/** The id of the session being renamed, or null when none is. */
+	let editingId = $state<string | null>(null);
+	let nameDraft = $state('');
+	/** The id of the session awaiting delete confirmation, or null. */
+	let confirmingId = $state<string | null>(null);
 
 	// Effects never run on the server, so this is our "read the url on load" hook.
 	// Reading page.url keeps it reactive: back/forward re-resolves for free, and
@@ -30,7 +39,13 @@
 	});
 
 	// Our generated ids sort chronologically, so newest sessions come first.
-	let sessions = $derived([...connection.sessions].sort().reverse());
+	let sessions = $derived([...connection.sessions].sort((a, b) => (a.id < b.id ? 1 : -1)));
+
+	// The friendly name of the session we just made, for the "ready" note.
+	let activeName = $derived(
+		connection.sessions.find((s) => s.id === connection.activeSession)?.name ??
+			connection.activeSession
+	);
 
 	$effect(() => {
 		if (ready && !api.url && connection.status !== 'checking') inputEl?.focus();
@@ -62,6 +77,35 @@
 	async function handleDisconnect() {
 		disconnect();
 		await replaceState(resolve('/'), {});
+	}
+
+	function beginRename(session: Session) {
+		editingId = session.id;
+		nameDraft = session.name;
+		confirmingId = null;
+	}
+
+	function cancelRename() {
+		editingId = null;
+		nameDraft = '';
+	}
+
+	async function handleRename(event: SubmitEvent) {
+		event.preventDefault();
+		const id = editingId;
+		const name = nameDraft.trim();
+		if (id === null || !name) return;
+
+		if (await renameSession(id, name)) cancelRename();
+	}
+
+	function requestDelete(sessionId: string) {
+		editingId = null;
+		confirmingId = sessionId;
+	}
+
+	async function confirmDelete(sessionId: string) {
+		if (await deleteSession(sessionId)) confirmingId = null;
 	}
 </script>
 
@@ -109,7 +153,7 @@
 					<p class="text-center text-xs text-red-600">{connection.error}</p>
 				{:else if connection.activeSession}
 					<p class="text-center text-xs text-emerald-600">
-						{connection.activeSession} is ready for takes.
+						{activeName} is ready for takes.
 					</p>
 				{/if}
 
@@ -135,17 +179,76 @@
 						</p>
 					{:else}
 						<ul class="space-y-2">
-							{#each sessions as session (session)}
-								<li
-									class="flex items-center justify-between gap-3 rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3"
-								>
-									<span class="font-mono text-xs break-all text-neutral-700">{session}</span>
-									{#if session === connection.activeSession}
-										<span
-											class="shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] tracking-wide text-emerald-700 uppercase"
-										>
-											ready
-										</span>
+							{#each sessions as session (session.id)}
+								<li class="rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3">
+									{#if editingId === session.id}
+										<form onsubmit={handleRename} class="flex items-center gap-2">
+											<input
+												bind:value={nameDraft}
+												aria-label="Session name"
+												class="min-w-0 flex-1 rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 focus:border-neutral-500 focus:ring-2 focus:ring-neutral-200 focus:outline-none"
+											/>
+											<button
+												type="submit"
+												class="shrink-0 rounded-md bg-neutral-900 px-3 py-2 text-xs font-medium text-white hover:bg-neutral-800"
+											>
+												Save
+											</button>
+											<button
+												type="button"
+												onclick={cancelRename}
+												class="shrink-0 rounded-md px-3 py-2 text-xs text-neutral-600 hover:bg-neutral-100"
+											>
+												Cancel
+											</button>
+										</form>
+									{:else if confirmingId === session.id}
+										<div class="flex items-center justify-between gap-3">
+											<span class="text-sm text-neutral-700">Delete this session?</span>
+											<div class="flex shrink-0 items-center gap-2">
+												<button
+													onclick={() => confirmDelete(session.id)}
+													class="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700"
+												>
+													Delete
+												</button>
+												<button
+													onclick={() => (confirmingId = null)}
+													class="rounded-md px-3 py-1.5 text-xs text-neutral-600 hover:bg-neutral-100"
+												>
+													Cancel
+												</button>
+											</div>
+										</div>
+									{:else}
+										<div class="flex items-center justify-between gap-3">
+											<div class="flex min-w-0 items-center gap-2">
+												<span class="truncate text-sm text-neutral-800" title={session.name}>
+													{session.name}
+												</span>
+												{#if session.id === connection.activeSession}
+													<span
+														class="shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] tracking-wide text-emerald-700 uppercase"
+													>
+														ready
+													</span>
+												{/if}
+											</div>
+											<div class="flex shrink-0 items-center gap-1">
+												<button
+													onclick={() => beginRename(session)}
+													class="rounded-md px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900"
+												>
+													Rename
+												</button>
+												<button
+													onclick={() => requestDelete(session.id)}
+													class="rounded-md px-2 py-1 text-xs text-neutral-500 hover:bg-red-50 hover:text-red-600"
+												>
+													Delete
+												</button>
+											</div>
+										</div>
 									{/if}
 								</li>
 							{/each}

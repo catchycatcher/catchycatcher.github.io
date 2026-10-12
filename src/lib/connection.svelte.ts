@@ -9,7 +9,7 @@
  * "what the url says" and "what we saved" together on load.
  */
 import { api, clearApiUrl, setApiUrl } from './api.svelte.ts';
-import { newSessionId } from './session.ts';
+import { newSessionId, newSessionName, type Session } from './session.ts';
 import { inputFromParams, toApiUrl, type SearchParamsLike, type ShareInput } from './share.ts';
 import {
 	clearSavedConnection,
@@ -34,7 +34,7 @@ export const connection = $state({
 	source: '',
 	/** The persisted connection, mirrored here so the UI can offer "try again". */
 	saved: null as SavedConnection | null,
-	sessions: [] as string[],
+	sessions: [] as Session[],
 	sessionsStatus: 'idle' as SessionsStatus,
 	/** The session most recently created, highlighted in the list. */
 	activeSession: null as string | null,
@@ -71,8 +71,8 @@ export async function ping(url: string): Promise<boolean> {
 	}
 }
 
-/** Every session id stored on the server. */
-export async function listSessions(url: string): Promise<string[]> {
+/** Every session stored on the server, with its display name. */
+export async function listSessions(url: string): Promise<Session[]> {
 	const response = await fetch(`${base(url)}/sessions`, {
 		headers: { accept: 'application/json' }
 	});
@@ -82,17 +82,60 @@ export async function listSessions(url: string): Promise<string[]> {
 
 	const body: unknown = await response.json();
 	if (!isRecord(body) || !Array.isArray(body.sessions)) return [];
-	return body.sessions.filter((id): id is string => typeof id === 'string');
+
+	const sessions: Session[] = [];
+	for (const entry of body.sessions) {
+		// Legacy servers returned bare id strings; newer ones return objects.
+		if (typeof entry === 'string') {
+			sessions.push({ id: entry, name: entry });
+		} else if (isRecord(entry) && typeof entry.id === 'string') {
+			const name = typeof entry.name === 'string' && entry.name.trim() ? entry.name : entry.id;
+			sessions.push({ id: entry.id, name });
+		}
+	}
+	return sessions;
 }
 
 /** Create an empty session folder, ready for the first take. */
-export async function createSession(url: string, sessionId: string): Promise<void> {
+export async function createSession(url: string, sessionId: string, name: string): Promise<void> {
+	const response = await fetch(
+		`${base(url)}/sessions/${encodeURIComponent(sessionId)}?name=${encodeURIComponent(name)}`,
+		{
+			method: 'POST',
+			headers: { accept: 'application/json' }
+		}
+	);
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when creating the session.`);
+	}
+}
+
+/** Change a session's display name (its takes are untouched). */
+export async function patchSessionName(
+	url: string,
+	sessionId: string,
+	name: string
+): Promise<void> {
+	const response = await fetch(
+		`${base(url)}/sessions/${encodeURIComponent(sessionId)}?name=${encodeURIComponent(name)}`,
+		{
+			method: 'PATCH',
+			headers: { accept: 'application/json' }
+		}
+	);
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when renaming the session.`);
+	}
+}
+
+/** Delete a session and every take inside it. */
+export async function removeSession(url: string, sessionId: string): Promise<void> {
 	const response = await fetch(`${base(url)}/sessions/${encodeURIComponent(sessionId)}`, {
-		method: 'POST',
+		method: 'DELETE',
 		headers: { accept: 'application/json' }
 	});
 	if (!response.ok) {
-		throw new Error(`The server answered ${response.status} when creating the session.`);
+		throw new Error(`The server answered ${response.status} when deleting the session.`);
 	}
 }
 
@@ -220,13 +263,46 @@ export async function startNewSession(): Promise<void> {
 	connection.busy = true;
 	connection.error = null;
 	try {
-		await createSession(url, sessionId);
+		await createSession(url, sessionId, newSessionName());
 		connection.activeSession = sessionId;
 		await refreshSessions();
 	} catch (error) {
 		connection.error = error instanceof Error ? error.message : 'Could not create the session.';
 	} finally {
 		connection.busy = false;
+	}
+}
+
+/** Rename a session. Returns whether it worked; failures land in `connection.error`. */
+export async function renameSession(sessionId: string, name: string): Promise<boolean> {
+	const url = api.url;
+	if (!url) return false;
+
+	connection.error = null;
+	try {
+		await patchSessionName(url, sessionId, name);
+		await refreshSessions();
+		return true;
+	} catch (error) {
+		connection.error = error instanceof Error ? error.message : 'Could not rename the session.';
+		return false;
+	}
+}
+
+/** Delete a session and every take inside it. Returns whether it worked. */
+export async function deleteSession(sessionId: string): Promise<boolean> {
+	const url = api.url;
+	if (!url) return false;
+
+	connection.error = null;
+	try {
+		await removeSession(url, sessionId);
+		if (connection.activeSession === sessionId) connection.activeSession = null;
+		await refreshSessions();
+		return true;
+	} catch (error) {
+		connection.error = error instanceof Error ? error.message : 'Could not delete the session.';
+		return false;
 	}
 }
 
