@@ -9,7 +9,7 @@
  * "what the url says" and "what we saved" together on load.
  */
 import { api, clearApiUrl, setApiUrl } from './api.svelte.ts';
-import { newSessionId, newSessionName, type Session } from './session.ts';
+import { newSessionId, newSessionName, newTakeId, type Session } from './session.ts';
 import { inputFromParams, toApiUrl, type SearchParamsLike, type ShareInput } from './share.ts';
 import {
 	clearSavedConnection,
@@ -23,6 +23,38 @@ const HEALTH_TIMEOUT_MS = 6000;
 
 export type ConnectionStatus = 'idle' | 'checking' | 'online' | 'offline';
 export type SessionsStatus = 'idle' | 'loading' | 'ready' | 'error';
+
+/** One word in a lyric line, as the pipeline returns it. */
+export type LyricWord = { word: string; length: number };
+
+/** One lyric line; keys mirror the spec schema (hence the spaced "start time"). */
+export type LyricLine = {
+	bpm: number;
+	'start time': number;
+	'end time': number;
+	words: LyricWord[];
+};
+
+/** The payload returned once a take has been processed. */
+export type TakeResult = {
+	vocals: string;
+	background: string;
+	lyrics: LyricLine[];
+};
+
+/** A take as the session manifest describes it. */
+export type TakeMeta = {
+	take_id: string;
+	index: number;
+	status: string;
+	error?: string | null;
+	filename?: string;
+	created_at?: string;
+	finished_at?: string;
+};
+
+/** A session's name plus the takes stored inside it. */
+export type SessionDetail = { id: string; name: string; takes: TakeMeta[] };
 
 export const connection = $state({
 	status: 'idle' as ConnectionStatus,
@@ -142,6 +174,64 @@ export async function removeSession(url: string, sessionId: string): Promise<voi
 }
 
 // ---------------------------------------------------------------------------
+// Takes (one processed recording inside a session)
+// ---------------------------------------------------------------------------
+
+/** A session's name and its takes, from the manifest endpoint. */
+export async function getSession(url: string, sessionId: string): Promise<SessionDetail> {
+	const response = await fetch(`${base(url)}/sessions/${encodeURIComponent(sessionId)}`, {
+		headers: { accept: 'application/json' }
+	});
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when loading the session.`);
+	}
+
+	const body: unknown = await response.json();
+	if (!isRecord(body)) return { id: sessionId, name: sessionId, takes: [] };
+
+	const id = typeof body.session_id === 'string' ? body.session_id : sessionId;
+	const name = typeof body.name === 'string' && body.name.trim() ? body.name : id;
+	const takes = Array.isArray(body.takes) ? (body.takes as TakeMeta[]) : [];
+	return { id, name, takes };
+}
+
+/**
+ * Upload one recording and wait for the processed result. This can take minutes
+ * on the GPU, so the caller should show a spinner for the whole call.
+ */
+export async function uploadTake(url: string, sessionId: string, file: File): Promise<TakeResult> {
+	const takeId = newTakeId();
+	const form = new FormData();
+	form.append('file', file);
+
+	const response = await fetch(
+		`${base(url)}/sessions/${encodeURIComponent(sessionId)}/takes/${encodeURIComponent(takeId)}`,
+		{ method: 'POST', body: form, headers: { accept: 'application/json' } }
+	);
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when processing the recording.`);
+	}
+	return (await response.json()) as TakeResult;
+}
+
+/** A finished take's result, or null when it has not produced one. */
+export async function getTakeResult(
+	url: string,
+	sessionId: string,
+	takeId: string
+): Promise<TakeResult | null> {
+	const response = await fetch(
+		`${base(url)}/sessions/${encodeURIComponent(sessionId)}/takes/${encodeURIComponent(takeId)}`,
+		{ headers: { accept: 'application/json' } }
+	);
+	if (!response.ok) return null;
+
+	const body: unknown = await response.json();
+	if (isRecord(body) && isRecord(body.result)) return body.result as TakeResult;
+	return null;
+}
+
+// ---------------------------------------------------------------------------
 // Connecting
 // ---------------------------------------------------------------------------
 
@@ -256,10 +346,14 @@ export async function refreshSessions(): Promise<void> {
 	}
 }
 
-/** Create a fresh session folder on the server and reveal it in the list. */
-export async function startNewSession(): Promise<void> {
+/**
+ * Create a fresh session folder on the server, reveal it in the list, and
+ * return its id (or null when there was nothing to do / it failed) so the
+ * caller can navigate into it.
+ */
+export async function startNewSession(): Promise<string | null> {
 	const url = api.url;
-	if (!url || connection.busy) return;
+	if (!url || connection.busy) return null;
 
 	const sessionId = newSessionId();
 	connection.busy = true;
@@ -268,8 +362,10 @@ export async function startNewSession(): Promise<void> {
 		await createSession(url, sessionId, newSessionName());
 		connection.activeSession = sessionId;
 		await refreshSessions();
+		return sessionId;
 	} catch (error) {
 		connection.error = error instanceof Error ? error.message : 'Could not create the session.';
+		return null;
 	} finally {
 		connection.busy = false;
 	}

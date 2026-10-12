@@ -132,6 +132,16 @@ export function newSessionName(): string {
 }
 
 /**
+ * A unique, path-safe id for an uploaded take, e.g. `take-m1x2y3-4f2`.
+ * Takes are identified by id in the API, so this only needs to not collide.
+ */
+export function newTakeId(now: number = Date.now()): string {
+	const stamp = now.toString(36);
+	const suffix = Math.random().toString(36).slice(2, 5);
+	return `take-${stamp}-${suffix}`;
+}
+
+/**
  * Format a session's last-modified timestamp as `MM/DD/YYYY` for display.
  * Returns an empty string when there is no usable timestamp.
  */

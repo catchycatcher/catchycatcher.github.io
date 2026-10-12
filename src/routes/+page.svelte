@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { pushState, replaceState } from '$app/navigation';
+	import { goto, pushState, replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { api } from '#lib/api.svelte.ts';
@@ -50,6 +50,12 @@
 	$effect(() => {
 		if (ready && !api.url && connection.status !== 'checking') inputEl?.focus();
 	});
+
+	/** Create a session, then drop straight into its page. */
+	async function handleNewSession() {
+		const id = await startNewSession();
+		if (id) await goto(resolve(`/session?id=${encodeURIComponent(id)}`));
+	}
 
 	async function handleSubmit(event: SubmitEvent) {
 		event.preventDefault();
@@ -135,7 +141,7 @@
 
 				<div class="flex gap-3">
 					<button
-						onclick={startNewSession}
+						onclick={handleNewSession}
 						disabled={connection.busy}
 						class="flex-1 rounded-lg bg-neutral-900 px-4 py-3 text-sm font-medium text-white hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-60"
 					>
@@ -223,9 +229,13 @@
 									{:else}
 										<div class="flex items-center justify-between gap-3">
 											<div class="flex min-w-0 items-center gap-2">
-												<span class="truncate text-sm text-neutral-800" title={session.name}>
+												<a
+													href={resolve(`/session?id=${encodeURIComponent(session.id)}`)}
+													class="truncate text-sm text-neutral-800 hover:text-neutral-950 hover:underline"
+													title={session.name}
+												>
 													{session.name}
-												</span>
+												</a>
 												{#if formatSessionDate(session.updatedAt)}
 													<span
 														class="shrink-0 text-xs text-neutral-400"
