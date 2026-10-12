@@ -86,16 +86,8 @@
 			<div class="space-y-6">
 				<div class="space-y-1 text-center">
 					<h1 class="text-2xl font-semibold tracking-tight">Connected</h1>
-					<p class="text-sm text-neutral-500">
-						API url resolved from {connection.source || 'your share code'}.
-					</p>
+					<p class="text-sm text-neutral-500">You're connected to your processing server.</p>
 				</div>
-
-				<p
-					class="rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3 font-mono text-xs break-all text-emerald-600"
-				>
-					{api.url}
-				</p>
 
 				<div class="flex gap-3">
 					<button
@@ -216,11 +208,6 @@
 					>
 						{submitting ? 'Connecting…' : 'Connect'}
 					</button>
-
-					<p class="text-center text-xs text-neutral-400">
-						Or add <code class="font-mono">?share_code=…</code> or
-						<code class="font-mono">?url=…</code> to the address bar to skip this prompt.
-					</p>
 				</form>
 			</div>
 		{/if}

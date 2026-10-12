@@ -121,7 +121,7 @@ export async function establish(
 
 	if (!(await ping(url))) {
 		connection.status = 'offline';
-		return { ok: false, message: `Couldn't reach the server at ${url}.` };
+		return { ok: false, message: "Couldn't reach the server." };
 	}
 
 	setApiUrl(url);
