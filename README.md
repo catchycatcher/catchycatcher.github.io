@@ -1,6 +1,6 @@
-# CatchyCatcher
+# Catchy Catcher
 
-Frontend for **CatchyCatcher** — record audio, ship it to an API, then build an
+Frontend for **Catchy Catcher** — record audio, ship it to an API, then build an
 interactive scratch-style arrangement (drag blocks, play back audio, save your
 work).
 
