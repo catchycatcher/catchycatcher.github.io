@@ -71,7 +71,7 @@ export async function ping(url: string): Promise<boolean> {
 	}
 }
 
-/** Every session stored on the server, with its display name. */
+/** Every session stored on the server, with its display name and last change. */
 export async function listSessions(url: string): Promise<Session[]> {
 	const response = await fetch(`${base(url)}/sessions`, {
 		headers: { accept: 'application/json' }
@@ -87,10 +87,12 @@ export async function listSessions(url: string): Promise<Session[]> {
 	for (const entry of body.sessions) {
 		// Legacy servers returned bare id strings; newer ones return objects.
 		if (typeof entry === 'string') {
-			sessions.push({ id: entry, name: entry });
+			sessions.push({ id: entry, name: entry, updatedAt: null });
 		} else if (isRecord(entry) && typeof entry.id === 'string') {
 			const name = typeof entry.name === 'string' && entry.name.trim() ? entry.name : entry.id;
-			sessions.push({ id: entry.id, name });
+			const updatedAt =
+				typeof entry.updated_at === 'string' && entry.updated_at ? entry.updated_at : null;
+			sessions.push({ id: entry.id, name, updatedAt });
 		}
 	}
 	return sessions;

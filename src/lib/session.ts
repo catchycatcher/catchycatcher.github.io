@@ -4,8 +4,9 @@
  * business in a `.svelte.ts` file.
  */
 
-/** A session as the API describes it: a stable `id` plus a friendly `name`. */
-export type Session = { id: string; name: string };
+/** A session as the API describes it: a stable `id`, a friendly `name`, and
+ * when it was last changed (`updatedAt`, an ISO-8601 string or null). */
+export type Session = { id: string; name: string; updatedAt: string | null };
 
 /**
  * A readable, collision-resistant id for a new session, e.g.
@@ -123,11 +124,21 @@ function pick(words: string[]): string {
 }
 
 /**
- * A friendly default name for a new session, e.g. `Lazy Horse (10/12/2026)`.
- * The date is local and formatted month/day/year.
+ * A friendly default name for a new session, e.g. `Lazy Horse`. The date is not
+ * part of the name; the UI shows the session's last-modified date separately.
  */
-export function newSessionName(now: Date = new Date()): string {
-	const pad = (value: number) => String(value).padStart(2, '0');
-	const date = `${pad(now.getMonth() + 1)}/${pad(now.getDate())}/${now.getFullYear()}`;
-	return `${pick(ADJECTIVES)} ${pick(NOUNS)} (${date})`;
+export function newSessionName(): string {
+	return `${pick(ADJECTIVES)} ${pick(NOUNS)}`;
+}
+
+/**
+ * Format a session's last-modified timestamp as `MM/DD/YYYY` for display.
+ * Returns an empty string when there is no usable timestamp.
+ */
+export function formatSessionDate(value: string | null): string {
+	if (!value) return '';
+	const date = new Date(value);
+	if (Number.isNaN(date.getTime())) return '';
+	const pad = (part: number) => String(part).padStart(2, '0');
+	return `${pad(date.getMonth() + 1)}/${pad(date.getDate())}/${date.getFullYear()}`;
 }

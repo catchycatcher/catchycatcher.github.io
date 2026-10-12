@@ -15,7 +15,7 @@
 		startNewSession
 	} from '#lib/connection.svelte.ts';
 	import { parseShareInput, toHref } from '#lib/share.ts';
-	import type { Session } from '#lib/session.ts';
+	import { formatSessionDate, type Session } from '#lib/session.ts';
 
 	/** False until the query string has been read in the browser. */
 	let ready = $state(false);
@@ -110,8 +110,8 @@
 </script>
 
 <svelte:head>
-	<title>CatchyCatcher</title>
-	<meta name="description" content="CatchyCatcher — connect to your audio API." />
+	<title>Catchy Catcher</title>
+	<meta name="description" content="Catchy Catcher — connect to your audio API." />
 	<meta name="theme-color" content="#ffffff" />
 </svelte:head>
 
@@ -226,6 +226,14 @@
 												<span class="truncate text-sm text-neutral-800" title={session.name}>
 													{session.name}
 												</span>
+												{#if formatSessionDate(session.updatedAt)}
+													<span
+														class="shrink-0 text-xs text-neutral-400"
+														title="Last modified {formatSessionDate(session.updatedAt)}"
+													>
+														{formatSessionDate(session.updatedAt)}
+													</span>
+												{/if}
 												{#if session.id === connection.activeSession}
 													<span
 														class="shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] tracking-wide text-emerald-700 uppercase"
@@ -259,7 +267,7 @@
 		{:else}
 			<div class="space-y-6">
 				<div class="space-y-2 text-center">
-					<h1 class="text-3xl font-semibold tracking-tight">CatchyCatcher</h1>
+					<h1 class="text-3xl font-semibold tracking-tight">Catchy Catcher</h1>
 					<p class="text-sm text-neutral-500">
 						Enter the share code for your Gradio app to get started.
 					</p>
