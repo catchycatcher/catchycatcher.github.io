@@ -19,6 +19,7 @@
 		onCarve,
 		onGroupLines,
 		onUngroup,
+		lineRef,
 		framed = true
 	}: {
 		src: string;
@@ -31,6 +32,8 @@
 		downloadName?: string;
 		/** Per-line payload for dragging out (journal → scrapbook); null = no drag. */
 		dragLine?: (lineIndex: number) => unknown | null;
+		/** Per-line ref, used to drag an existing group out as a linked copy. */
+		lineRef?: (lineIndex: number) => unknown | null;
 		/** Allow dragging the selection to reorder within this player. */
 		allowReorder?: boolean;
 		/** A selection of lines dropped in at ``index``. */
@@ -54,7 +57,7 @@
 		framed?: boolean;
 	} = $props();
 
-	type Group = { id: string; type: string };
+	type Group = { id: string; type: string; name?: string };
 	type Line = {
 		text: string;
 		start: number;
@@ -65,7 +68,7 @@
 	};
 	type Row =
 		| { kind: 'line'; index: number }
-		| { kind: 'group'; id: string; type: string; indices: number[] };
+		| { kind: 'group'; id: string; type: string; name: string; indices: number[] };
 
 	/** Colours for the section groups: chorus blue, verse rose, bridge green, other grey. */
 	const SECTION_STYLES: Record<string, string> = {
@@ -158,7 +161,13 @@
 					indices.push(j);
 					j++;
 				}
-				rows.push({ kind: 'group', id: group.id, type: group.type, indices });
+				rows.push({
+					kind: 'group',
+					id: group.id,
+					type: group.type,
+					name: group.name || sectionLabel(group.type),
+					indices
+				});
 				i = j;
 			} else {
 				rows.push({ kind: 'line', index: i });
@@ -170,8 +179,33 @@
 
 	let rows = $derived(buildRows(lines));
 
+	/** Distinct sections present, in order of first appearance (for the top row). */
+	let groupList = $derived.by(() => {
+		const seen: Record<string, { id: string; type: string; name: string }> = {};
+		const list: { id: string; type: string; name: string }[] = [];
+		for (const row of rows) {
+			if (row.kind === 'group' && !seen[row.id]) {
+				const entry = { id: row.id, type: row.type, name: row.name };
+				seen[row.id] = entry;
+				list.push(entry);
+			}
+		}
+		return list;
+	});
+
 	function rowKey(row: Row): string {
 		return row.kind === 'line' ? `line-${row.index}` : `group-${row.id}-${row.indices[0]}`;
+	}
+
+	/** Dragging a section chip out makes a linked copy where it is dropped. */
+	function dragGroupChip(event: DragEvent, groupId: string) {
+		if (!event.dataTransfer || !lineRef) return;
+		const row = rows.find((candidate) => candidate.kind === 'group' && candidate.id === groupId);
+		if (!row || row.kind !== 'group') return;
+		const refs = row.indices.map((index) => lineRef(index)).filter((ref) => ref != null);
+		if (!refs.length) return;
+		event.dataTransfer.setData('application/x-catchy-lines', JSON.stringify(refs));
+		event.dataTransfer.effectAllowed = 'copy';
 	}
 
 	function sectionStyle(type: string): string {
@@ -662,19 +696,36 @@
 		</button>
 	</div>
 
-	{#if onGroupLines && selected.length}
-		<!-- Group the selection into a section; each button looks like a coloured bubble. -->
-		<div class="flex flex-wrap items-center gap-1.5">
-			<span class="text-xs text-neutral-400">Group {selected.length} as</span>
-			{#each SECTIONS as section (section.type)}
-				<button
-					type="button"
-					onclick={() => onGroupLines([...selected], section.type)}
-					class="rounded-xl border px-2.5 py-1 text-xs font-medium {sectionStyle(section.type)}"
-				>
-					{section.label}
-				</button>
-			{/each}
+	{#if onGroupLines}
+		<!-- Always-present row: group the selection, or drag out an existing section. -->
+		<div class="flex min-h-7 flex-wrap items-center gap-1.5">
+			{#if selected.length}
+				<span class="text-xs text-neutral-400">Group {selected.length} as</span>
+				{#each SECTIONS as section (section.type)}
+					<button
+						type="button"
+						onclick={() => onGroupLines([...selected], section.type)}
+						class="rounded-xl border px-2.5 py-1 text-xs font-medium {sectionStyle(section.type)}"
+					>
+						{section.label}
+					</button>
+				{/each}
+			{:else if groupList.length}
+				<span class="text-xs text-neutral-400">Sections</span>
+				{#each groupList as group (group.id)}
+					<button
+						type="button"
+						draggable={Boolean(lineRef)}
+						ondragstart={(event) => dragGroupChip(event, group.id)}
+						title="Drag into the scrapbook to reuse this section"
+						class="rounded-xl border px-2.5 py-1 text-xs font-medium {sectionStyle(
+							group.type
+						)} {lineRef ? 'cursor-grab' : ''}"
+					>
+						{group.name}
+					</button>
+				{/each}
+			{/if}
 		</div>
 	{/if}
 
@@ -709,7 +760,7 @@
 							<span
 								class="mb-0.5 block text-[10px] font-semibold tracking-wide uppercase opacity-70"
 							>
-								{sectionLabel(row.type)}
+								{row.name}
 							</span>
 							{#if expandedGroups[row.id]}
 								<span class="block text-xs opacity-60">Double-click to close</span>

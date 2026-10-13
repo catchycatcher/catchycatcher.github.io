@@ -714,20 +714,73 @@
 		}
 	}
 
-	function saveLines(lines: LineRef[]) {
-		void saveScrapbook({ lines });
+	/**
+	 * Keep every instance of a section identical: the section you just edited
+	 * defines its lines and order, and the other instances are rebuilt from it.
+	 */
+	function syncLinkedGroups(
+		lines: LineRef[],
+		sourceGroupId?: string,
+		sourceIndex?: number
+	): LineRef[] {
+		const runs: Record<string, { start: number; end: number }[]> = {};
+		let index = 0;
+		while (index < lines.length) {
+			const id = lines[index].group?.id;
+			if (!id) {
+				index++;
+				continue;
+			}
+			const start = index;
+			while (index < lines.length && lines[index].group?.id === id) index++;
+			(runs[id] ??= []).push({ start, end: index });
+		}
+		const ids = Object.keys(runs);
+		if (!ids.length) return lines;
+
+		const canonical: Record<string, LineRef[]> = {};
+		for (const id of ids) {
+			const list = runs[id];
+			let chosen = list[0];
+			if (sourceGroupId === id && sourceIndex !== undefined) {
+				chosen = list.find((run) => sourceIndex >= run.start && sourceIndex < run.end) ?? chosen;
+			}
+			canonical[id] = lines.slice(chosen.start, chosen.end);
+		}
+
+		const out: LineRef[] = [];
+		index = 0;
+		while (index < lines.length) {
+			const id = lines[index].group?.id;
+			if (!id) {
+				out.push(lines[index]);
+				index++;
+				continue;
+			}
+			while (index < lines.length && lines[index].group?.id === id) index++;
+			const source = canonical[id] ?? [];
+			out.push(...source.map((ref) => ({ ...ref, data: ref.data ? { ...ref.data } : undefined })));
+		}
+		return out;
+	}
+
+	function saveLines(lines: LineRef[], sourceGroupId?: string, sourceIndex?: number) {
+		void saveScrapbook({ lines: syncLinkedGroups(lines, sourceGroupId, sourceIndex) });
 	}
 
 	function addLinesAt(refs: LineRef[], index?: number) {
 		const current = scrapbook ? [...scrapbook.lines] : [];
-		current.splice(index ?? current.length, 0, ...refs);
-		saveLines(current);
+		const at = index ?? current.length;
+		current.splice(at, 0, ...refs);
+		saveLines(current, refs[0]?.group?.id, at);
 	}
 
 	function removeLineAt(index: number) {
 		const current = scrapbook ? [...scrapbook.lines] : [];
+		const groupId = current[index]?.group?.id;
 		current.splice(index, 1);
-		saveLines(current);
+		const sourceIndex = Math.min(index, Math.max(0, current.length - 1));
+		saveLines(current, groupId, sourceIndex);
 	}
 
 	/** Move the selected indices together so they land before ``to``. */
@@ -743,7 +796,7 @@
 		const remaining = current.filter((_line, index) => !valid.includes(index));
 		const target = Math.max(0, Math.min(remaining.length, to - removedBefore));
 		remaining.splice(target, 0, ...moving);
-		saveLines(remaining);
+		saveLines(remaining, moving[0]?.group?.id, target);
 	}
 
 	function onScrapbookDrop(event: DragEvent) {
@@ -917,22 +970,53 @@
 
 	let scrapbookLines = $derived(scrapbookLinesFor());
 
+	/** Pretty names for section types. */
+	const SECTION_LABELS: Record<string, string> = {
+		chorus: 'Chorus',
+		verse: 'Verse',
+		bridge: 'Bridge',
+		other: 'Other'
+	};
+
+	/**
+	 * Rename every section of ``type`` so the first is ``Type`` (when alone) or
+	 * ``Type 1``, ``Type 2``… as soon as there is more than one.
+	 */
+	function renumberSections(lines: LineRef[], type: string): LineRef[] {
+		const ids: string[] = [];
+		for (const ref of lines) {
+			if (ref.group?.type === type && !ids.includes(ref.group.id)) ids.push(ref.group.id);
+		}
+		const label = SECTION_LABELS[type] ?? 'Section';
+		const names: Record<string, string> = {};
+		ids.forEach((id, index) => {
+			names[id] = ids.length > 1 ? `${label} ${index + 1}` : label;
+		});
+		return lines.map((ref) =>
+			ref.group && names[ref.group.id]
+				? { ...ref, group: { ...ref.group, name: names[ref.group.id] } }
+				: ref
+		);
+	}
+
 	/** Group a contiguous run of scrapbook lines under a section type. */
 	function groupScrapbookLines(indices: number[], type: string) {
 		if (!scrapbook || !indices.length) return;
 		const low = Math.min(...indices);
 		const high = Math.max(...indices);
 		const id = `g-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-		const lines = scrapbook.lines.map((ref, index) =>
+		let lines = scrapbook.lines.map((ref, index) =>
 			index >= low && index <= high ? { ...ref, group: { id, type } } : ref
 		);
+		lines = renumberSections(lines, type);
 		saveLines(lines);
 	}
 
 	/** Break a section group back into plain lines. */
 	function ungroupScrapbookLines(groupId: string) {
 		if (!scrapbook) return;
-		const lines = scrapbook.lines.map((ref) => {
+		const type = scrapbook.lines.find((ref) => ref.group?.id === groupId)?.group?.type;
+		let lines = scrapbook.lines.map((ref) => {
 			if (ref.group?.id !== groupId) return ref;
 			return {
 				session_id: ref.session_id,
@@ -941,6 +1025,7 @@
 				data: ref.data
 			};
 		});
+		if (type) lines = renumberSections(lines, type);
 		saveLines(lines);
 	}
 
@@ -1150,6 +1235,7 @@
 								onLocateLine={locateScrapbookLine}
 								onGroupLines={groupScrapbookLines}
 								onUngroup={ungroupScrapbookLines}
+								lineRef={(index) => scrapbook?.lines[index] ?? null}
 							/>
 							{#if !scrapbook.render?.timeline?.length && !scrapbookBusy}
 								<button
