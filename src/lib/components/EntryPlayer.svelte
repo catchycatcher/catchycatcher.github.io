@@ -12,7 +12,9 @@
 		allowReorder = false,
 		onDropLines,
 		onMoveLines,
-		onRemove
+		onRemove,
+		onEditLine,
+		onLocateLine
 	}: {
 		src: string;
 		lyrics: LyricLine[];
@@ -31,10 +33,13 @@
 		/** Move the selected line indices to sit before ``index``. */
 		onMoveLines?: (from: number[], to: number) => void;
 		onRemove?: (index: number) => void;
+		/** Double-clicking a line edits its text (timings stay the same). */
+		onEditLine?: (index: number, text: string) => void;
+		/** Ctrl/cmd-clicking a line jumps to it in the journal. */
+		onLocateLine?: (index: number) => void;
 	} = $props();
 
-	type Word = { text: string; start: number; end: number };
-	type Line = { text: string; start: number; end: number; words: Word[] };
+	type Line = { text: string; start: number; end: number };
 
 	let audio = $state<HTMLAudioElement | null>(null);
 	let rootEl = $state<HTMLDivElement | null>(null);
@@ -50,38 +55,26 @@
 	let dropIndex = $state<number | null>(null);
 	/** Absolute top (px) for the insertion line, so it never shifts the rows. */
 	let dropTop = $state<number | null>(null);
+	/** Index of the line being text-edited, if any. */
+	let editing = $state<number | null>(null);
+	let editDraft = $state('');
 
-	/** Give every word a start/end, deriving them when the server omits them. */
+	/** Each line's display text (edited override, else its words joined). */
 	function resolve(rawLines: LyricLine[]): Line[] {
 		return rawLines
 			.map((line) => {
 				const start = Number(line['start time']) || 0;
 				const end = Math.max(Number(line['end time']) || start, start);
-				const rawWords = line.words ?? [];
-				const total = rawWords.reduce((sum, word) => sum + (word.length || 0), 0);
-				const slack = Math.max(0, end - start - total);
-				const gap = rawWords.length > 1 ? slack / (rawWords.length - 1) : 0;
-
-				let cursor = start;
-				const words = rawWords.map((word) => {
-					const wordStart = word.start ?? cursor;
-					const wordEnd = word.end ?? wordStart + (word.length || 0);
-					cursor = wordEnd + gap;
-					return { text: word.word, start: wordStart, end: wordEnd };
-				});
-
-				const lastEnd = words.length ? words[words.length - 1].end : end;
-				return {
-					text: rawWords
-						.map((word) => word.word)
-						.join(' ')
-						.trim(),
-					start,
-					end: Math.max(end, lastEnd),
-					words
-				};
+				const text =
+					typeof line.text === 'string' && line.text.trim()
+						? line.text.trim()
+						: (line.words ?? [])
+								.map((word) => word.word)
+								.join(' ')
+								.trim();
+				return { text, start, end };
 			})
-			.filter((line) => line.words.length > 0);
+			.filter((line) => line.text.length > 0);
 	}
 
 	function findLine(lines: Line[], time: number): number {
@@ -93,25 +86,18 @@
 		return -1;
 	}
 
-	function findWord(words: Word[], time: number): number {
-		for (let index = 0; index < words.length; index++) {
-			if (time >= words[index].start && time < words[index].end) return index;
-		}
-		return -1;
-	}
-
 	let lines = $derived(resolve(lyrics));
 	let playable = $derived(Boolean(src));
 	let selectable = $derived(Boolean(dragLine || allowReorder));
 	let droppable = $derived(Boolean(onDropLines || onMoveLines));
 	let activeLine = $derived(playable && playing ? findLine(lines, currentTime) : -1);
-	let activeWord = $derived(findWord(lines[activeLine]?.words ?? [], currentTime));
 
-	// A new line set (re-render, reorder, add) invalidates any selection.
+	// A new line set (re-render, reorder, add) invalidates selection/editing.
 	$effect(() => {
 		const current = lyrics;
 		selected = [];
 		anchor = null;
+		editing = null;
 		void current;
 	});
 
@@ -176,6 +162,11 @@
 	}
 
 	function onLineClick(index: number, event: MouseEvent) {
+		if ((event.ctrlKey || event.metaKey) && onLocateLine) {
+			event.preventDefault();
+			onLocateLine(index);
+			return;
+		}
 		if (!selectable) return;
 		if (event.shiftKey && anchor !== null) {
 			const low = Math.min(anchor, index);
@@ -185,6 +176,28 @@
 		}
 		selected = [index];
 		anchor = index;
+	}
+
+	function onLineDoubleClick(index: number, event: MouseEvent) {
+		if (!onEditLine) return;
+		event.preventDefault();
+		selected = [];
+		anchor = null;
+		editing = index;
+		editDraft = lines[index].text;
+	}
+
+	function commitEdit(event: SubmitEvent) {
+		event.preventDefault();
+		const index = editing;
+		editing = null;
+		const text = editDraft.trim();
+		if (index !== null && text && onEditLine) onEditLine(index, text);
+	}
+
+	function cancelEdit() {
+		editing = null;
+		editDraft = '';
 	}
 
 	function selectedIndices(index: number): number[] {
@@ -236,11 +249,9 @@
 	}
 
 	function onListDragLeave(event: DragEvent) {
-		// Ignore leaving onto one of our own children (which fires dragleave too).
 		const next = event.relatedTarget as Node | null;
 		if (next && listEl?.contains(next)) return;
-		dropIndex = null;
-		dropTop = null;
+		clearDrop();
 	}
 
 	function clearDrop() {
@@ -383,40 +394,60 @@
 		{/if}
 		{#each lines as line, index (index)}
 			<div role="listitem" data-row class="flex items-center gap-1 self-start">
-				<button
-					type="button"
-					data-active={index === activeLine}
-					data-line
-					draggable={Boolean(dragLine || allowReorder)}
-					ondragstart={(event) => dragStart(event, index)}
-					ondragend={clearDrop}
-					onclick={(event) => onLineClick(index, event)}
-					class="w-fit max-w-full rounded-xl border px-2.5 py-1 text-left text-sm leading-snug transition-colors {selected.includes(
-						index
-					)
-						? 'border-amber-400 bg-amber-50'
-						: 'border-neutral-200 bg-white/60 hover:bg-white'}"
-				>
-					{#each line.words as word, wordIndex (wordIndex)}
-						<span
-							class="rounded px-0.5 {index === activeLine && wordIndex === activeWord
-								? 'bg-amber-200 text-neutral-900'
-								: 'text-neutral-700'}"
+				{#if editing === index}
+					<form onsubmit={commitEdit} class="flex items-center gap-1">
+						<input
+							bind:value={editDraft}
+							aria-label="Line text"
+							class="min-w-0 rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm focus:border-neutral-500 focus:outline-none"
+						/>
+						<button
+							type="submit"
+							class="shrink-0 rounded-md bg-neutral-900 px-2 py-1 text-xs font-medium text-white hover:bg-neutral-800"
 						>
-							{word.text}
-						</span>
-						{#if wordIndex < line.words.length - 1}<span> </span>{/if}
-					{/each}
-				</button>
-				{#if onRemove}
+							Save
+						</button>
+						<button
+							type="button"
+							onclick={cancelEdit}
+							class="shrink-0 rounded-md px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-100"
+						>
+							Cancel
+						</button>
+					</form>
+				{:else}
 					<button
 						type="button"
-						onclick={() => onRemove(index)}
-						aria-label="Remove line"
-						class="shrink-0 rounded px-1.5 py-0.5 text-xs text-neutral-400 hover:bg-red-50 hover:text-red-600"
+						data-active={index === activeLine}
+						data-line
+						data-line-index={index}
+						draggable={Boolean(dragLine || allowReorder)}
+						ondragstart={(event) => dragStart(event, index)}
+						ondragend={clearDrop}
+						onclick={(event) => onLineClick(index, event)}
+						ondblclick={(event) => onLineDoubleClick(index, event)}
+						title={onLocateLine
+							? 'Ctrl-click to find in journal · double-click to edit'
+							: undefined}
+						class="w-fit max-w-full rounded-xl border px-2.5 py-1 text-left text-sm leading-snug transition-colors {index ===
+						activeLine
+							? 'border-amber-300 bg-amber-200 text-neutral-900'
+							: selected.includes(index)
+								? 'border-amber-400 bg-amber-50'
+								: 'border-neutral-200 bg-white/60 hover:bg-white'}"
 					>
-						×
+						{line.text}
 					</button>
+					{#if onRemove}
+						<button
+							type="button"
+							onclick={() => onRemove(index)}
+							aria-label="Remove line"
+							class="shrink-0 rounded px-1.5 py-0.5 text-xs text-neutral-400 hover:bg-red-50 hover:text-red-600"
+						>
+							×
+						</button>
+					{/if}
 				{/if}
 			</div>
 		{/each}

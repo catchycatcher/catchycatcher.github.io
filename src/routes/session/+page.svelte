@@ -18,6 +18,7 @@
 		scrapbookAudioUrl,
 		setBookmark,
 		takeAudioUrl,
+		updateLineText,
 		updateScrapbook,
 		uploadTake,
 		type LineRef,
@@ -509,11 +510,45 @@
 	function lineLabel(ref: LineRef): string {
 		const entry = entries.find((candidate) => candidate.serverId === ref.take_id);
 		const line = entry?.lyrics[ref.line_index];
-		const text = line?.words
-			.map((word) => word.word)
-			.join(' ')
-			.trim();
+		const text =
+			(line?.text && line.text.trim()) ||
+			line?.words
+				.map((word) => word.word)
+				.join(' ')
+				.trim();
 		return text || `Line ${ref.line_index + 1}`;
+	}
+
+	/** Double-clicked a line's text in the journal; persist the display override. */
+	async function editLine(entry: Entry, index: number, text: string) {
+		const url = api.url;
+		if (!url || !entry.serverId) return;
+		const trimmed = text.trim();
+		updateEntry(entry.localId, {
+			lyrics: entry.lyrics.map((line, lineIndex) =>
+				lineIndex === index ? { ...line, text: trimmed } : line
+			)
+		});
+		try {
+			const updated = await updateLineText(url, sessionId, entry.serverId, index, trimmed);
+			updateEntry(entry.localId, {
+				lyrics: entry.lyrics.map((line, lineIndex) => (lineIndex === index ? updated : line))
+			});
+		} catch (editError) {
+			error = editError instanceof Error ? editError.message : 'Could not save the line.';
+		}
+	}
+
+	/** Ctrl-clicked a scrapbook line: scroll the journal to the same line. */
+	function locateScrapbookLine(index: number) {
+		const ref = scrapbook?.lines[index];
+		if (!ref) return;
+		const entry = document.querySelector<HTMLElement>(`[data-take-id="${ref.take_id}"]`);
+		const bubble = entry?.querySelector<HTMLElement>(`[data-line-index="${ref.line_index}"]`);
+		if (!bubble) return;
+		bubble.scrollIntoView({ behavior: 'smooth', block: 'center' });
+		bubble.classList.add('ring-2', 'ring-amber-500');
+		window.setTimeout(() => bubble.classList.remove('ring-2', 'ring-amber-500'), 1200);
 	}
 
 	/** True when the stored render's lines match the scrapbook's current lines. */
@@ -551,15 +586,18 @@
 		for (const line of book.render?.timeline ?? []) {
 			if (line.source) rendered[sourceKey(line.source)] = line;
 		}
-		return book.lines.map(
-			(ref) =>
-				rendered[sourceKey(ref)] ?? {
-					bpm: 0,
-					'start time': 0,
-					'end time': 0,
-					words: [{ word: lineLabel(ref), start: 0, end: 0, length: 0 }]
-				}
-		);
+		return book.lines.map((ref) => {
+			const base = rendered[sourceKey(ref)];
+			return {
+				bpm: base?.bpm ?? 0,
+				'start time': base?.['start time'] ?? 0,
+				'end time': base?.['end time'] ?? 0,
+				words: base?.words ?? [],
+				// The display text always comes from the journal line, so edits show
+				// here immediately without re-rendering the mix.
+				text: lineLabel(ref)
+			};
+		});
 	}
 
 	let scrapbookLines = $derived(scrapbookLinesFor());
@@ -734,6 +772,7 @@
 								onDropLines={(refs, index) => addLinesAt(refs as LineRef[], index)}
 								onMoveLines={moveLines}
 								onRemove={removeLineAt}
+								onLocateLine={locateScrapbookLine}
 							/>
 							{#if !scrapbook.render?.timeline?.length && !scrapbookBusy}
 								<button
@@ -784,7 +823,10 @@
 					{:else}
 						<ul class="space-y-3">
 							{#each visibleEntries as entry (entry.localId)}
-								<li class="space-y-3 rounded-xl border border-neutral-200 bg-white px-4 py-3">
+								<li
+									data-take-id={entry.serverId ?? undefined}
+									class="space-y-3 rounded-xl border border-neutral-200 bg-white px-4 py-3"
+								>
 									<div class="flex items-center justify-between gap-3">
 										<div class="flex min-w-0 flex-1 items-center gap-2">
 											<span class="font-mono text-xs text-neutral-400"
@@ -881,6 +923,7 @@
 											lyrics={entry.lyrics}
 											downloadName={entry.name}
 											dragLine={(lineIndex) => journalLineRef(entry, lineIndex)}
+											onEditLine={(lineIndex, text) => editLine(entry, lineIndex, text)}
 										/>
 									{:else if entryAudio(entry)}
 										<EntryPlayer

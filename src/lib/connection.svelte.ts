@@ -39,6 +39,8 @@ export type LyricLine = {
 	'start time': number;
 	'end time': number;
 	words: LyricWord[];
+	/** Optional display-text override (the pipeline timings are unchanged). */
+	text?: string;
 	/** Scrapbook renders tag each line with the take it came from. */
 	source?: { session_id: string; take_id: string; line_index: number };
 };
@@ -293,6 +295,25 @@ export async function renameTake(
 	if (!response.ok) {
 		throw new Error(`The server answered ${response.status} when renaming the entry.`);
 	}
+}
+
+/** Rewrite a lyric line from edited text; the server re-guesses its word timings. */
+export async function updateLineText(
+	url: string,
+	sessionId: string,
+	takeId: string,
+	lineIndex: number,
+	text: string
+): Promise<LyricLine> {
+	const response = await fetch(
+		`${base(url)}/sessions/${encodeURIComponent(sessionId)}/takes/${encodeURIComponent(takeId)}/lines/${lineIndex}?text=${encodeURIComponent(text)}`,
+		{ method: 'PATCH', headers: { accept: 'application/json' } }
+	);
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when saving the line.`);
+	}
+	const body = (await response.json()) as { line: LyricLine };
+	return body.line;
 }
 
 /** A playable url for a take's raw audio or a generated stem. */
