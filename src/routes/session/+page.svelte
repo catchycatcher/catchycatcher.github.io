@@ -729,6 +729,7 @@
 								src={scrapbookSrc}
 								lyrics={scrapbookLines}
 								loading={scrapbookLoading}
+								downloadName={scrapbook.name}
 								allowReorder
 								onDropLines={(refs, index) => addLinesAt(refs as LineRef[], index)}
 								onMoveLines={moveLines}
@@ -878,10 +879,16 @@
 										<EntryPlayer
 											src={entryAudio(entry)}
 											lyrics={entry.lyrics}
+											downloadName={entry.name}
 											dragLine={(lineIndex) => journalLineRef(entry, lineIndex)}
 										/>
 									{:else if entryAudio(entry)}
-										<audio controls src={entryAudio(entry)} class="w-full"></audio>
+										<EntryPlayer
+											src={entryAudio(entry)}
+											lyrics={[]}
+											emptyLabel={null}
+											downloadName={entry.name}
+										/>
 									{/if}
 								</li>
 							{/each}

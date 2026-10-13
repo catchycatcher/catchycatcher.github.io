@@ -1,10 +1,13 @@
 <script lang="ts">
 	import type { LyricLine } from '#lib/connection.svelte.ts';
+	import { extensionForMime } from '#lib/recorder.svelte.ts';
 
 	let {
 		src,
 		lyrics,
 		loading = false,
+		emptyLabel = 'No words detected in this take.',
+		downloadName = 'audio',
 		dragLine,
 		allowReorder = false,
 		onDropLines,
@@ -15,6 +18,10 @@
 		lyrics: LyricLine[];
 		/** Show a spinner on the play button (e.g. while the mix re-renders). */
 		loading?: boolean;
+		/** Message shown when there are no lines; ``null`` hides it entirely. */
+		emptyLabel?: string | null;
+		/** Base filename (an extension is chosen from the audio type). */
+		downloadName?: string;
 		/** Per-line payload for dragging out (journal → scrapbook); null = no drag. */
 		dragLine?: (lineIndex: number) => unknown | null;
 		/** Allow dragging the selection to reorder within this player. */
@@ -274,6 +281,27 @@
 		const whole = Math.floor(seconds);
 		return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
 	}
+
+	/** Save the current audio to a file (fetch → blob, so it works cross-origin). */
+	function download() {
+		if (!src) return;
+		void (async () => {
+			try {
+				const response = await fetch(src);
+				const blob = await response.blob();
+				const url = URL.createObjectURL(blob);
+				const anchor = document.createElement('a');
+				anchor.href = url;
+				anchor.download = `${downloadName}.${extensionForMime(blob.type || '')}`;
+				document.body.appendChild(anchor);
+				anchor.click();
+				anchor.remove();
+				URL.revokeObjectURL(url);
+			} catch {
+				window.open(src, '_blank');
+			}
+		})();
+	}
 </script>
 
 <div bind:this={rootEl} class="space-y-3 rounded-xl border border-neutral-200 bg-neutral-50 p-3">
@@ -316,6 +344,29 @@
 		<span class="shrink-0 font-mono text-xs text-neutral-500">
 			{format(currentTime)} / {format(duration)}
 		</span>
+		<button
+			type="button"
+			onclick={download}
+			disabled={!playable}
+			aria-label="Download"
+			title="Download audio"
+			class="shrink-0 rounded-md p-1.5 text-neutral-500 hover:bg-neutral-200 hover:text-neutral-900 disabled:cursor-not-allowed disabled:opacity-40"
+		>
+			<svg
+				viewBox="0 0 24 24"
+				class="size-4"
+				fill="none"
+				stroke="currentColor"
+				stroke-width="2"
+				stroke-linecap="round"
+				stroke-linejoin="round"
+				aria-hidden="true"
+			>
+				<path d="M12 3v12" />
+				<path d="m7 11 5 5 5-5" />
+				<path d="M5 21h14" />
+			</svg>
+		</button>
 	</div>
 
 	<div
@@ -327,8 +378,8 @@
 		ondragleave={onListDragLeave}
 		ondrop={onListDrop}
 	>
-		{#if lines.length === 0}
-			<p class="px-1 py-2 text-sm text-neutral-400">No words detected in this take.</p>
+		{#if lines.length === 0 && emptyLabel}
+			<p class="px-1 py-2 text-sm text-neutral-400">{emptyLabel}</p>
 		{/if}
 		{#each lines as line, index (index)}
 			<div role="listitem" data-row class="flex items-center gap-1 self-start">
