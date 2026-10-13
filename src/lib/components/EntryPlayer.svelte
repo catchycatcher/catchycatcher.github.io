@@ -41,6 +41,8 @@
 	let anchor = $state<number | null>(null);
 	/** Insertion point for a drag, drawn as a line between bubbles. */
 	let dropIndex = $state<number | null>(null);
+	/** Absolute top (px) for the insertion line, so it never shifts the rows. */
+	let dropTop = $state<number | null>(null);
 
 	/** Give every word a start/end, deriving them when the server omits them. */
 	function resolve(rawLines: LyricLine[]): Line[] {
@@ -212,13 +214,38 @@
 		if (!droppable) return;
 		event.preventDefault();
 		dropIndex = insertionIndex(event.clientY);
+		dropTop = indicatorTop(dropIndex);
+	}
+
+	function indicatorTop(index: number): number {
+		if (!listEl) return 0;
+		const rows = [...listEl.querySelectorAll<HTMLElement>('[data-row]')];
+		if (rows.length === 0) return 0;
+		if (index >= rows.length) {
+			const last = rows[rows.length - 1];
+			return last.offsetTop + last.offsetHeight + 2;
+		}
+		return Math.max(0, rows[index].offsetTop - 2);
+	}
+
+	function onListDragLeave(event: DragEvent) {
+		// Ignore leaving onto one of our own children (which fires dragleave too).
+		const next = event.relatedTarget as Node | null;
+		if (next && listEl?.contains(next)) return;
+		dropIndex = null;
+		dropTop = null;
+	}
+
+	function clearDrop() {
+		dropIndex = null;
+		dropTop = null;
 	}
 
 	function onListDrop(event: DragEvent) {
 		if (!droppable) return;
 		event.preventDefault();
 		const index = dropIndex ?? lines.length;
-		dropIndex = null;
+		clearDrop();
 
 		const external = event.dataTransfer?.getData('application/x-catchy-lines');
 		if (external && onDropLines) {
@@ -295,18 +322,15 @@
 		bind:this={listEl}
 		role="list"
 		aria-label="Lines"
-		class="flex max-h-72 flex-col gap-1 overflow-y-auto"
+		class="relative flex max-h-72 flex-col gap-1 overflow-y-auto"
 		ondragover={onListDragOver}
-		ondragleave={() => (dropIndex = null)}
+		ondragleave={onListDragLeave}
 		ondrop={onListDrop}
 	>
 		{#if lines.length === 0}
 			<p class="px-1 py-2 text-sm text-neutral-400">No words detected in this take.</p>
 		{/if}
 		{#each lines as line, index (index)}
-			{#if droppable && dropIndex === index}
-				<div class="h-0.5 rounded-full bg-amber-500" aria-hidden="true"></div>
-			{/if}
 			<div role="listitem" data-row class="flex items-center gap-1 self-start">
 				<button
 					type="button"
@@ -314,7 +338,7 @@
 					data-line
 					draggable={Boolean(dragLine || allowReorder)}
 					ondragstart={(event) => dragStart(event, index)}
-					ondragend={() => (dropIndex = null)}
+					ondragend={clearDrop}
 					onclick={(event) => onLineClick(index, event)}
 					class="w-fit max-w-full rounded-xl border px-2.5 py-1 text-left text-sm leading-snug transition-colors {selected.includes(
 						index
@@ -345,8 +369,12 @@
 				{/if}
 			</div>
 		{/each}
-		{#if droppable && dropIndex === lines.length && lines.length > 0}
-			<div class="h-0.5 rounded-full bg-amber-500" aria-hidden="true"></div>
+		{#if droppable && dropTop !== null}
+			<div
+				class="pointer-events-none absolute inset-x-0 h-0.5 rounded-full bg-amber-500"
+				style="top:{dropTop}px"
+				aria-hidden="true"
+			></div>
 		{/if}
 	</div>
 
