@@ -653,36 +653,79 @@
 		window.setTimeout(() => bubble.classList.remove('ring-2', 'ring-amber-500'), 1200);
 	}
 
-	/** Send a take's new line segmentation to the server (it recomputes BPM). */
-	async function applyLyrics(entry: Entry, lines: { words: LyricWord[]; raw?: boolean }[]) {
-		const url = api.url;
-		if (!url || !entry.serverId) return;
-		try {
-			const updated = await updateLyrics(url, sessionId, entry.serverId, lines);
-			updateEntry(entry.localId, { lyrics: updated });
-		} catch (editError) {
-			error = editError instanceof Error ? editError.message : 'Could not save the lines.';
-		}
-	}
-
 	function payload(lines: LyricLine[]) {
 		return lines.map((line) => ({ words: line.words, raw: line.raw }));
 	}
 
-	/** Ctrl-clicked: merge the selected lines into one raw (bubble-less) line. */
+	/** Per-entry request counter, so a slow older response can't clobber a newer edit. */
+	const lyricEditSeq: Record<string, number> = {};
+
+	/**
+	 * Build a display line locally so a re-line is instant. The server's response
+	 * (with the real BPM/timings) replaces it a moment later.
+	 */
+	function localLine(words: LyricWord[], raw: boolean, fallback: LyricLine): LyricLine {
+		const starts = words
+			.map((word) => word.start)
+			.filter((v): v is number => typeof v === 'number');
+		const ends = words.map((word) => word.end).filter((v): v is number => typeof v === 'number');
+		const line: LyricLine = {
+			bpm: fallback.bpm ?? 0,
+			'start time': starts.length ? Math.min(...starts) : fallback['start time'],
+			'end time': ends.length ? Math.max(...ends) : fallback['end time'],
+			words
+		};
+		if (raw) line.raw = true;
+		return line;
+	}
+
+	/**
+	 * Apply a new segmentation to a take. The UI updates immediately; the server
+	 * is told in the background (it recomputes BPM) and only the newest edit wins.
+	 */
+	function applyLyrics(entry: Entry, lines: LyricLine[]) {
+		const previous = entry.lyrics;
+		updateEntry(entry.localId, { lyrics: lines });
+
+		const url = api.url;
+		const takeId = entry.serverId;
+		if (!url || !takeId) return;
+
+		const seq = (lyricEditSeq[entry.localId] ?? 0) + 1;
+		lyricEditSeq[entry.localId] = seq;
+		void (async () => {
+			try {
+				const updated = await updateLyrics(url, sessionId, takeId, payload(lines));
+				if (lyricEditSeq[entry.localId] === seq) {
+					updateEntry(entry.localId, { lyrics: updated });
+				}
+			} catch (editError) {
+				if (lyricEditSeq[entry.localId] === seq) {
+					updateEntry(entry.localId, { lyrics: previous });
+				}
+				error = editError instanceof Error ? editError.message : 'Could not save the lines.';
+			}
+		})();
+	}
+
+	/** Ctrl-clicked: merge the selected lines into one raw (bubble-less) line.
+	 *  A single line just loses its bubbles so you can carve it back up. */
 	function mergeSelectedLines(entry: Entry, indices: number[]) {
 		const lines = entry.lyrics;
-		if (indices.length < 2) return;
+		if (!indices.length) return;
 		const low = Math.max(0, indices[0]);
 		const high = Math.min(lines.length - 1, indices[indices.length - 1]);
+		if (high < low) return;
+		if (low === high && lines[low].raw) return;
 		const mergedWords: LyricWord[] = [];
 		for (let index = low; index <= high; index++) mergedWords.push(...lines[index].words);
+		if (!mergedWords.length) return;
 		const next = [
 			...lines.slice(0, low),
-			{ words: mergedWords, raw: true } as LyricLine,
+			localLine(mergedWords, true, lines[low]),
 			...lines.slice(high + 1)
 		];
-		void applyLyrics(entry, payload(next));
+		applyLyrics(entry, next);
 	}
 
 	/** Dragged across words of a raw line: those words become a bubble, the rest
@@ -694,11 +737,11 @@
 		if (from === 0 && to === words.length - 1 && !line.raw) return;
 		const raw = Boolean(line.raw);
 		const parts: LyricLine[] = [];
-		if (from > 0) parts.push({ words: words.slice(0, from), raw } as LyricLine);
-		parts.push({ words: words.slice(from, to + 1) } as LyricLine);
-		if (to + 1 < words.length) parts.push({ words: words.slice(to + 1), raw } as LyricLine);
+		if (from > 0) parts.push(localLine(words.slice(0, from), raw, line));
+		parts.push(localLine(words.slice(from, to + 1), false, line));
+		if (to + 1 < words.length) parts.push(localLine(words.slice(to + 1), raw, line));
 		const next = [...entry.lyrics.slice(0, index), ...parts, ...entry.lyrics.slice(index + 1)];
-		void applyLyrics(entry, payload(next));
+		applyLyrics(entry, next);
 	}
 
 	/** True when the stored render's lines match the scrapbook's current lines. */
