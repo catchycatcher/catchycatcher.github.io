@@ -14,7 +14,10 @@
 		onMoveLines,
 		onRemove,
 		onEditLine,
-		onLocateLine
+		onLocateLine,
+		onCtrlClick,
+		onCarve,
+		carveEnabled = false
 	}: {
 		src: string;
 		lyrics: LyricLine[];
@@ -33,13 +36,18 @@
 		/** Move the selected line indices to sit before ``index``. */
 		onMoveLines?: (from: number[], to: number) => void;
 		onRemove?: (index: number) => void;
-		/** Double-clicking a line edits its text (timings stay the same). */
+		/** Double-clicking a line edits its text (timings are re-guessed). */
 		onEditLine?: (index: number, text: string) => void;
 		/** Ctrl/cmd-clicking a line jumps to it in the journal. */
 		onLocateLine?: (index: number) => void;
+		/** Ctrl/cmd-clicking a line merges it with its neighbour (journal). */
+		onCtrlClick?: (index: number) => void;
+		/** Drag across words to carve a line into bubbles (only when enabled). */
+		onCarve?: (index: number, from: number, to: number) => void;
+		carveEnabled?: boolean;
 	} = $props();
 
-	type Line = { text: string; start: number; end: number };
+	type Line = { text: string; start: number; end: number; words: string[] };
 
 	let audio = $state<HTMLAudioElement | null>(null);
 	let rootEl = $state<HTMLDivElement | null>(null);
@@ -58,6 +66,8 @@
 	/** Index of the line being text-edited, if any. */
 	let editing = $state<number | null>(null);
 	let editDraft = $state('');
+	/** Word range being dragged out for carving (only when ``carveEnabled``). */
+	let carving = $state<{ index: number; from: number; to: number } | null>(null);
 
 	/** Each line's display text (edited override, else its words joined). */
 	function resolve(rawLines: LyricLine[]): Line[] {
@@ -65,14 +75,15 @@
 			.map((line) => {
 				const start = Number(line['start time']) || 0;
 				const end = Math.max(Number(line['end time']) || start, start);
+				const rawWords = line.words ?? [];
 				const text =
 					typeof line.text === 'string' && line.text.trim()
 						? line.text.trim()
-						: (line.words ?? [])
+						: rawWords
 								.map((word) => word.word)
 								.join(' ')
 								.trim();
-				return { text, start, end };
+				return { text, start, end, words: rawWords.map((word) => word.word) };
 			})
 			.filter((line) => line.text.length > 0);
 	}
@@ -98,6 +109,7 @@
 		selected = [];
 		anchor = null;
 		editing = null;
+		carving = null;
 		void current;
 	});
 
@@ -167,6 +179,11 @@
 			onLocateLine(index);
 			return;
 		}
+		if ((event.ctrlKey || event.metaKey) && onCtrlClick) {
+			event.preventDefault();
+			onCtrlClick(index);
+			return;
+		}
 		if (!selectable) return;
 		if (event.shiftKey && anchor !== null) {
 			const low = Math.min(anchor, index);
@@ -187,6 +204,30 @@
 		editDraft = lines[index].text;
 	}
 
+	function wordPointerDown(index: number, wordIndex: number, event: PointerEvent) {
+		if (!onCarve || !carveEnabled) return;
+		event.preventDefault();
+		try {
+			(event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
+		} catch {
+			/* synthetic or stale pointer id; carving still works without capture */
+		}
+		carving = { index, from: wordIndex, to: wordIndex };
+	}
+
+	function wordPointerMove(index: number, wordIndex: number) {
+		if (!carving || carving.index !== index) return;
+		carving = { index, from: carving.from, to: wordIndex };
+	}
+
+	function wordPointerUp() {
+		const active = carving;
+		carving = null;
+		if (active && onCarve && carveEnabled) {
+			onCarve(active.index, Math.min(active.from, active.to), Math.max(active.from, active.to));
+		}
+	}
+
 	function commitEdit(event: SubmitEvent) {
 		event.preventDefault();
 		const index = editing;
@@ -203,6 +244,21 @@
 	function selectedIndices(index: number): number[] {
 		const indices = selected.includes(index) ? selected : [index];
 		return [...indices].sort((a, b) => a - b);
+	}
+
+	/** Selected = blue; the playing line = yellow; both = blue with a yellow ring. */
+	function bubbleClass(index: number): string {
+		const isSelected = selected.includes(index);
+		const isActive = index === activeLine;
+		let state = 'border-neutral-200 bg-white/60 hover:bg-white';
+		if (isSelected && isActive) {
+			state = 'border-blue-400 bg-blue-200 ring-2 ring-amber-400';
+		} else if (isSelected) {
+			state = 'border-blue-400 bg-blue-200';
+		} else if (isActive) {
+			state = 'border-amber-300 bg-amber-200 text-neutral-900';
+		}
+		return `w-fit max-w-full select-none rounded-xl border px-2.5 py-1 text-left text-sm leading-snug transition-colors ${state}`;
 	}
 
 	function dragStart(event: DragEvent, index: number) {
@@ -384,7 +440,7 @@
 		bind:this={listEl}
 		role="list"
 		aria-label="Lines"
-		class="relative flex max-h-72 flex-col gap-1 overflow-y-auto"
+		class="relative flex max-h-72 flex-col gap-1 overflow-y-auto select-none"
 		ondragover={onListDragOver}
 		ondragleave={onListDragLeave}
 		ondrop={onListDrop}
@@ -424,19 +480,33 @@
 						draggable={Boolean(dragLine || allowReorder)}
 						ondragstart={(event) => dragStart(event, index)}
 						ondragend={clearDrop}
+						onmousedown={(event) => {
+							if (event.shiftKey) event.preventDefault();
+						}}
 						onclick={(event) => onLineClick(index, event)}
 						ondblclick={(event) => onLineDoubleClick(index, event)}
 						title={onLocateLine
 							? 'Ctrl-click to find in journal · double-click to edit'
 							: undefined}
-						class="w-fit max-w-full rounded-xl border px-2.5 py-1 text-left text-sm leading-snug transition-colors {index ===
-						activeLine
-							? 'border-amber-300 bg-amber-200 text-neutral-900'
-							: selected.includes(index)
-								? 'border-amber-400 bg-amber-50'
-								: 'border-neutral-200 bg-white/60 hover:bg-white'}"
+						class={bubbleClass(index)}
 					>
-						{line.text}
+						{#each line.words as word, wordIndex (wordIndex)}
+							<!-- svelte-ignore a11y_no_static_element_interactions -->
+							<span
+								class="rounded px-0.5 {carving &&
+								carving.index === index &&
+								wordIndex >= Math.min(carving.from, carving.to) &&
+								wordIndex <= Math.max(carving.from, carving.to)
+									? 'bg-amber-500 text-white'
+									: ''}"
+								onpointerdown={(event) => wordPointerDown(index, wordIndex, event)}
+								onpointermove={() => wordPointerMove(index, wordIndex)}
+								onpointerup={wordPointerUp}
+							>
+								{word}
+							</span>
+							{#if wordIndex < line.words.length - 1}<span> </span>{/if}
+						{/each}
 					</button>
 					{#if onRemove}
 						<button

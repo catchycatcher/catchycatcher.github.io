@@ -19,10 +19,12 @@
 		setBookmark,
 		takeAudioUrl,
 		updateLineText,
+		updateLyrics,
 		updateScrapbook,
 		uploadTake,
 		type LineRef,
 		type LyricLine,
+		type LyricWord,
 		type Scrapbook,
 		type ScrapbookSummary,
 		type TakeMeta
@@ -68,6 +70,8 @@
 	let dragOverScrapbook = $state(false);
 	/** True while an edited scrapbook's mix is (re)rendering. */
 	let renderPending = $state(false);
+	/** The journal entry currently in re-split (carve) mode, if any. */
+	let carveEntry = $state<string | null>(null);
 
 	const recorder = new Recorder();
 	let segmentStartedAt = $state(0);
@@ -507,18 +511,6 @@
 		}
 	}
 
-	function lineLabel(ref: LineRef): string {
-		const entry = entries.find((candidate) => candidate.serverId === ref.take_id);
-		const line = entry?.lyrics[ref.line_index];
-		const text =
-			(line?.text && line.text.trim()) ||
-			line?.words
-				.map((word) => word.word)
-				.join(' ')
-				.trim();
-		return text || `Line ${ref.line_index + 1}`;
-	}
-
 	/** Double-clicked a line's text in the journal; persist the display override. */
 	async function editLine(entry: Entry, index: number, text: string) {
 		const url = api.url;
@@ -549,6 +541,52 @@
 		bubble.scrollIntoView({ behavior: 'smooth', block: 'center' });
 		bubble.classList.add('ring-2', 'ring-amber-500');
 		window.setTimeout(() => bubble.classList.remove('ring-2', 'ring-amber-500'), 1200);
+	}
+
+	/** Send a take's new line segmentation to the server (it recomputes BPM). */
+	async function applyLyrics(entry: Entry, lines: { words: LyricWord[] }[]) {
+		const url = api.url;
+		if (!url || !entry.serverId) return;
+		try {
+			const updated = await updateLyrics(url, sessionId, entry.serverId, lines);
+			updateEntry(entry.localId, { lyrics: updated });
+		} catch (editError) {
+			error = editError instanceof Error ? editError.message : 'Could not save the lines.';
+		}
+	}
+
+	/** Ctrl-clicked a journal line: merge it with its neighbour, then allow carving. */
+	function mergeLineWithNext(entry: Entry, index: number) {
+		carveEntry = entry.localId;
+		const lines = entry.lyrics;
+		if (lines.length < 2) return;
+		const target = index + 1 < lines.length ? index + 1 : index - 1;
+		const low = Math.min(index, target);
+		const high = Math.max(index, target);
+		const merged = { words: [...lines[low].words, ...lines[high].words] };
+		const next = [...lines.slice(0, low), merged, ...lines.slice(high + 1)];
+		carveEntry = entry.localId;
+		void applyLyrics(
+			entry,
+			next.map((line) => ({ words: line.words }))
+		);
+	}
+
+	/** Dragged across words in carve mode: those words become their own line(s). */
+	function carveLine(entry: Entry, index: number, from: number, to: number) {
+		const line = entry.lyrics[index];
+		if (!line) return;
+		const words = line.words;
+		if (from === 0 && to === words.length - 1) return;
+		const parts: { words: LyricWord[] }[] = [];
+		if (from > 0) parts.push({ words: words.slice(0, from) });
+		parts.push({ words: words.slice(from, to + 1) });
+		if (to + 1 < words.length) parts.push({ words: words.slice(to + 1) });
+		const next = [...entry.lyrics.slice(0, index), ...parts, ...entry.lyrics.slice(index + 1)];
+		void applyLyrics(
+			entry,
+			next.map((piece) => ({ words: piece.words }))
+		);
 	}
 
 	/** True when the stored render's lines match the scrapbook's current lines. */
@@ -588,14 +626,21 @@
 		}
 		return book.lines.map((ref) => {
 			const base = rendered[sourceKey(ref)];
+			const dataWords = ref.data?.words ?? [];
+			const label =
+				(ref.data?.text && ref.data.text.trim()) ||
+				dataWords
+					.map((word) => word.word)
+					.join(' ')
+					.trim();
 			return {
-				bpm: base?.bpm ?? 0,
+				bpm: base?.bpm ?? ref.data?.bpm ?? 0,
 				'start time': base?.['start time'] ?? 0,
 				'end time': base?.['end time'] ?? 0,
-				words: base?.words ?? [],
-				// The display text always comes from the journal line, so edits show
-				// here immediately without re-rendering the mix.
-				text: lineLabel(ref)
+				words: base?.words ?? dataWords,
+				// The text comes from the line's snapshot, so re-splitting the
+				// journal never changes a scrapbook that already holds it.
+				text: label || `Line ${ref.line_index + 1}`
 			};
 		});
 	}
@@ -924,6 +969,9 @@
 											downloadName={entry.name}
 											dragLine={(lineIndex) => journalLineRef(entry, lineIndex)}
 											onEditLine={(lineIndex, text) => editLine(entry, lineIndex, text)}
+											onCtrlClick={(lineIndex) => mergeLineWithNext(entry, lineIndex)}
+											onCarve={(lineIndex, from, to) => carveLine(entry, lineIndex, from, to)}
+											carveEnabled={carveEntry === entry.localId}
 										/>
 									{:else if entryAudio(entry)}
 										<EntryPlayer

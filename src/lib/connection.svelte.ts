@@ -316,6 +316,28 @@ export async function updateLineText(
 	return body.line;
 }
 
+/** Replace a take's lyric lines (re-splitting); the server recomputes each BPM. */
+export async function updateLyrics(
+	url: string,
+	sessionId: string,
+	takeId: string,
+	lines: { words: LyricWord[] }[]
+): Promise<LyricLine[]> {
+	const response = await fetch(
+		`${base(url)}/sessions/${encodeURIComponent(sessionId)}/takes/${encodeURIComponent(takeId)}/lyrics`,
+		{
+			method: 'PUT',
+			headers: { 'content-type': 'application/json', accept: 'application/json' },
+			body: JSON.stringify({ lines })
+		}
+	);
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when saving the lines.`);
+	}
+	const body = (await response.json()) as { lyrics: LyricLine[] };
+	return body.lyrics;
+}
+
 /** A playable url for a take's raw audio or a generated stem. */
 export function takeAudioUrl(
 	url: string,
@@ -347,8 +369,21 @@ export async function setBookmark(
 // Scrapbooks (tempo-matched mixes of isolated lines)
 // ---------------------------------------------------------------------------
 
-/** A line lifted from a processed journal entry. */
-export type LineRef = { session_id: string; take_id: string; line_index: number };
+/** A line lifted from a processed journal entry (with a snapshot of its data). */
+export type LineRef = {
+	session_id: string;
+	take_id: string;
+	line_index: number;
+	/** Snapshot taken when the line was added, so later journal edits don't affect it. */
+	data?: {
+		bpm?: number;
+		take_bpm?: number | null;
+		start?: number;
+		end?: number;
+		words?: LyricWord[];
+		text?: string | null;
+	};
+};
 
 export type ScrapbookSummary = {
 	scrapbook_id: string;
