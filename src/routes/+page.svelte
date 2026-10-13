@@ -14,7 +14,6 @@
 		establish,
 		getScribble,
 		listScribbles,
-		live,
 		processScribble,
 		refreshSessions,
 		renameScribble as renameScribbleApi,
@@ -22,7 +21,6 @@
 		retry,
 		scribbleAudioUrl,
 		startNewSession,
-		subscribeChanges,
 		updateScribbleLineText,
 		updateScribbleLyrics,
 		updateTextScribble,
@@ -34,6 +32,7 @@
 	import { parseShareInput, toHref } from '#lib/share.ts';
 	import { formatSessionDate, newEntryName, newTakeId, type Session } from '#lib/session.ts';
 	import { extensionForMime, Recorder } from '#lib/recorder.svelte.ts';
+	import { MicSharer } from '#lib/micShare.svelte.ts';
 	import EntryPlayer from '#lib/components/EntryPlayer.svelte';
 
 	type ScribbleStatus = 'recorded' | 'processing' | 'done' | 'error';
@@ -76,6 +75,16 @@
 	let sessionsOpen = $state(true);
 	let sessionsDefaulted = false;
 
+	/** Share this device's microphone with a computer on the same server. */
+	const micSharer = new MicSharer();
+
+	async function toggleSharedMic() {
+		const url = api.url;
+		if (!url) return;
+		if (micSharer.sharing) micSharer.stop();
+		else await micSharer.start(url);
+	}
+
 	const recorder = new Recorder();
 	let segmentStartedAt = $state(0);
 	let elapsed = $state(0);
@@ -103,32 +112,17 @@
 		sessionsOpen = !window.matchMedia('(max-width: 767px)').matches;
 	});
 
+	// Release the shared microphone when leaving the page.
+	$effect(() => {
+		return () => micSharer.stop();
+	});
+
 	// Scribbles are global: load them once per server.
 	$effect(() => {
 		const url = api.url;
 		if (!url || scribblesLoadedFor === url) return;
 		scribblesLoadedFor = url;
 		void loadScribbles(url);
-	});
-
-	// Live updates: refetch sessions and scribbles when another client writes.
-	$effect(() => {
-		const url = api.url;
-		if (!url) return;
-		let timer: number | undefined;
-		const stop = subscribeChanges(url, (event) => {
-			const path = event.path ?? '';
-			if (!path.startsWith('/sessions') && !path.startsWith('/scribbles')) return;
-			window.clearTimeout(timer);
-			timer = window.setTimeout(() => {
-				if (path.startsWith('/sessions')) void refreshSessions();
-				if (path.startsWith('/scribbles')) void loadScribbles(url);
-			}, 250);
-		});
-		return () => {
-			window.clearTimeout(timer);
-			stop();
-		};
 	});
 
 	// Live timer while recording a scribble.
@@ -581,7 +575,9 @@
 	<meta name="theme-color" content="#ffffff" />
 </svelte:head>
 
-<main class="grid min-h-dvh place-items-center bg-white px-6 text-neutral-900">
+<main
+	class="flex min-h-dvh flex-col items-center bg-white px-4 py-6 text-neutral-900 sm:justify-center sm:px-6"
+>
 	<div class="w-full {api.url ? 'max-w-2xl' : 'max-w-md'}">
 		{#if !ready}
 			<p class="text-center text-sm text-neutral-400">Loading…</p>
@@ -597,28 +593,54 @@
 				<div class="space-y-1 text-center">
 					<h1 class="text-2xl font-semibold tracking-tight">Connected</h1>
 					<p class="text-sm text-neutral-500">You're connected to your processing server.</p>
-					{#if live.connected}
-						<p
-							class="flex items-center justify-center gap-1 text-xs text-neutral-400"
-							title="Live: changes from other people appear automatically"
-						>
-							<span class="size-2 animate-pulse rounded-full bg-neutral-400"></span>
-							Live
-						</p>
-					{/if}
 				</div>
 
-				<div class="flex gap-3">
+				<button
+					type="button"
+					onclick={toggleSharedMic}
+					class="flex w-full items-center justify-center gap-2 rounded-2xl border px-4 py-4 text-base font-medium transition-colors {micSharer.sharing
+						? 'border-red-300 bg-red-50 text-red-700'
+						: 'border-neutral-300 bg-white text-neutral-800 hover:bg-neutral-50'}"
+				>
+					{#if micSharer.sharing}
+						<span class="size-2.5 animate-pulse rounded-full bg-red-500"></span>
+					{:else}
+						<svg
+							viewBox="0 0 24 24"
+							class="size-5"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							aria-hidden="true"
+						>
+							<rect x="9" y="3" width="6" height="11" rx="3" />
+							<path d="M5 11a7 7 0 0 0 14 0" />
+							<path d="M12 18v3" />
+						</svg>
+					{/if}
+					{micSharer.sharing ? 'Sharing microphone — tap to stop' : 'Share microphone'}
+				</button>
+				<p class="text-center text-xs text-neutral-500">
+					{micSharer.sharing
+						? "Open a session on a computer to record through this phone's mic."
+						: micSharer.error
+							? micSharer.error
+							: 'Turn this phone into the microphone for a computer on the same server.'}
+				</p>
+
+				<div class="flex flex-col gap-3 sm:flex-row">
 					<button
 						onclick={handleNewSession}
 						disabled={connection.busy}
-						class="flex-1 rounded-lg bg-neutral-900 px-4 py-3 text-sm font-medium text-white hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-60"
+						class="flex-1 rounded-xl bg-neutral-900 px-4 py-3 text-base font-medium text-white hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-60"
 					>
 						{connection.busy ? 'Creating…' : 'New session'}
 					</button>
 					<button
 						onclick={handleDisconnect}
-						class="flex-1 rounded-lg border border-neutral-300 px-4 py-3 text-sm text-neutral-700 hover:bg-neutral-100"
+						class="flex-1 rounded-xl border border-neutral-300 px-4 py-3 text-base text-neutral-700 hover:bg-neutral-100"
 					>
 						Disconnect
 					</button>

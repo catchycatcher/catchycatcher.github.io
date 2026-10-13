@@ -15,7 +15,6 @@
 		getTakeResult,
 		listScrapbooks,
 		listScribbles,
-		live,
 		processScribble,
 		processTake,
 		renderScrapbook,
@@ -24,7 +23,6 @@
 		scribbleAudioUrl,
 		SCRIBBLES_SESSION_ID,
 		setBookmark,
-		subscribeChanges,
 		takeAudioUrl,
 		updateLineText,
 		updateLyrics,
@@ -40,6 +38,7 @@
 	import { carve, lyricsPayload, mergeSelected } from '#lib/lyrics.ts';
 	import { newEntryName } from '#lib/session.ts';
 	import { extensionForMime, Recorder } from '#lib/recorder.svelte.ts';
+	import { SharedMic } from '#lib/micShare.svelte.ts';
 	import EntryPlayer from '#lib/components/EntryPlayer.svelte';
 
 	type EntryStatus = 'recorded' | 'processing' | 'done' | 'error';
@@ -122,9 +121,26 @@
 	let resizing = $state(false);
 
 	const recorder = new Recorder();
+	/** The phone-shared microphone, if one is available. */
+	const sharedMic = new SharedMic();
+	let micSource = $state<'computer' | 'shared'>('computer');
 	let segmentStartedAt = $state(0);
 	let elapsed = $state(0);
 	let loadedFor = '';
+
+	let recording = $derived(micSource === 'shared' ? sharedMic.recording : recorder.recording);
+	let recorderError = $derived(micSource === 'shared' ? sharedMic.error : recorder.error);
+	let recorderFailed = $derived(
+		micSource === 'shared' ? Boolean(sharedMic.error) : recorder.state === 'error'
+	);
+
+	// Listen for a shared microphone whenever we're connected.
+	$effect(() => {
+		const url = api.url;
+		if (!url) return;
+		sharedMic.connect(url);
+		return () => sharedMic.disconnect();
+	});
 
 	$effect(() => {
 		bootstrap(page.url.searchParams);
@@ -154,35 +170,8 @@
 		void loadScribbles(url);
 	});
 
-	// Live updates: when another client writes to this session or the shared
-	// scribbles, refetch just that part so two people see each other's work.
 	$effect(() => {
-		const url = api.url;
-		const id = sessionId;
-		if (!url) return;
-		let timer: number | undefined;
-		const stop = subscribeChanges(url, (event) => {
-			const path = event.path ?? '';
-			const mine = path.startsWith(`/sessions/${id}`);
-			const scribbles = path.startsWith('/scribbles');
-			if (!id || (!mine && !scribbles)) return;
-			window.clearTimeout(timer);
-			timer = window.setTimeout(() => {
-				if (mine) {
-					void loadSession(url, id);
-					void refreshScrapbooks(url);
-				}
-				if (scribbles) void loadScribbles(url);
-			}, 250);
-		});
-		return () => {
-			window.clearTimeout(timer);
-			stop();
-		};
-	});
-
-	$effect(() => {
-		if (!recorder.recording || segmentStartedAt <= 0) {
+		if (!recording || segmentStartedAt <= 0) {
 			elapsed = 0;
 			return;
 		}
@@ -201,6 +190,7 @@
 			window.removeEventListener('keydown', onKeydown);
 			window.removeEventListener('beforeunload', onUnload);
 			recorder.stop();
+			sharedMic.stop();
 		};
 	});
 
@@ -363,16 +353,24 @@
 
 	// --- Recording ---------------------------------------------------------
 
-	async function startRecording() {
+	async function startRecording(source: 'computer' | 'shared' = 'computer') {
+		if (source === 'shared') {
+			micSource = 'shared';
+			sharedMic.start();
+			if (sharedMic.recording) segmentStartedAt = performance.now();
+			return;
+		}
+		micSource = 'computer';
 		await recorder.start();
 		if (recorder.recording) segmentStartedAt = performance.now();
 	}
 
 	async function commit(process: boolean) {
 		const url = api.url;
-		if (!url || !sessionId || !recorder.recording) return;
+		if (!url || !sessionId || !recording) return;
 
-		const blob = await recorder.takeSegment();
+		const blob =
+			micSource === 'shared' ? await sharedMic.takeSegment() : await recorder.takeSegment();
 		segmentStartedAt = performance.now();
 		if (!blob) return;
 
@@ -413,9 +411,15 @@
 	}
 
 	async function scrapCurrent() {
-		if (!recorder.recording) return;
-		await recorder.discardSegment();
+		if (!recording) return;
+		if (micSource === 'shared') sharedMic.discardSegment();
+		else await recorder.discardSegment();
 		segmentStartedAt = performance.now();
+	}
+
+	function stopRecording() {
+		if (micSource === 'shared') sharedMic.stop();
+		else recorder.stop();
 	}
 
 	function onKeydown(event: KeyboardEvent) {
@@ -429,16 +433,16 @@
 		}
 		if (event.key === ' ' || event.key === 'Spacebar') {
 			event.preventDefault();
-			if (recorder.recording) void commit(true);
+			if (recording) void commit(true);
 			else void startRecording();
 			return;
 		}
-		if (event.key === 'Enter' && recorder.recording) {
+		if (event.key === 'Enter' && recording) {
 			event.preventDefault();
 			void commit(false);
 			return;
 		}
-		if ((event.key === 'Backspace' || event.key === 'Delete') && recorder.recording) {
+		if ((event.key === 'Backspace' || event.key === 'Delete') && recording) {
 			event.preventDefault();
 			void scrapCurrent();
 		}
@@ -1279,15 +1283,6 @@
 			<h1 class="truncate text-xl font-semibold tracking-tight">{sessionName || 'Session'}</h1>
 		</div>
 		<div class="flex shrink-0 items-center gap-3">
-			{#if live.connected}
-				<span
-					class="flex items-center gap-1 text-xs text-neutral-400"
-					title="Live: changes from other people appear automatically"
-				>
-					<span class="size-2 animate-pulse rounded-full bg-neutral-400"></span>
-					Live
-				</span>
-			{/if}
 			<a href={resolve('/')} class="text-xs text-neutral-500 hover:text-neutral-900">
 				All sessions
 			</a>
@@ -1313,17 +1308,19 @@
 			<section
 				class="order-last flex flex-wrap items-center gap-3 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-2.5"
 			>
-				{#if recorder.state === 'error'}
-					<p class="text-sm text-red-600">{recorder.error}</p>
+				{#if recorderFailed}
+					<p class="text-sm text-red-600">{recorderError}</p>
 					<button
-						onclick={startRecording}
+						onclick={() => startRecording()}
 						class="rounded-lg bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800"
 					>
 						Try again
 					</button>
-				{:else if recorder.recording}
+				{:else if recording}
 					<span class="size-2.5 animate-pulse rounded-full bg-red-600"></span>
-					<span class="text-sm font-medium">Recording</span>
+					<span class="text-sm font-medium">
+						Recording{micSource === 'shared' ? ' · shared mic' : ''}
+					</span>
 					<span class="font-mono text-sm text-neutral-500">{formatElapsed(elapsed)}</span>
 					<span class="ml-auto text-xs text-neutral-500">
 						<kbd class="rounded border border-neutral-300 bg-white px-1 py-0.5">Space</kbd> keep
@@ -1333,14 +1330,28 @@
 						<kbd class="rounded border border-neutral-300 bg-white px-1 py-0.5">Delete</kbd> scrap
 					</span>
 					<button
-						onclick={() => recorder.stop()}
+						onclick={stopRecording}
 						class="rounded-lg border border-neutral-300 px-3 py-1.5 text-sm text-neutral-700 hover:bg-neutral-100"
 					>
 						Stop
 					</button>
+				{:else if sharedMic.present}
+					<button
+						onclick={() => startRecording('computer')}
+						class="rounded-full border border-neutral-300 bg-white px-4 py-1.5 text-sm font-medium text-neutral-800 hover:bg-neutral-100"
+					>
+						Use computer mic
+					</button>
+					<button
+						onclick={() => startRecording('shared')}
+						class="rounded-full bg-red-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-red-700"
+					>
+						Use shared mic
+					</button>
+					<span class="text-xs text-neutral-500">A phone is sharing its microphone.</span>
 				{:else}
 					<button
-						onclick={startRecording}
+						onclick={() => startRecording()}
 						class="rounded-full bg-red-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-red-700"
 					>
 						Start recording
