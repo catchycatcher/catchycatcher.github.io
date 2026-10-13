@@ -14,7 +14,7 @@
 		retry,
 		startNewSession
 	} from '#lib/connection.svelte.ts';
-	import { parseShareInput, toHref } from '#lib/share.ts';
+	import { formatShareCode, parseShareInput, toHref } from '#lib/share.ts';
 	import { formatSessionDate, type Session } from '#lib/session.ts';
 
 	/** False until the query string has been read in the browser. */
@@ -83,6 +83,16 @@
 	async function handleDisconnect() {
 		disconnect();
 		await replaceState(resolve('/'), {});
+	}
+
+	/**
+	 * Show the share code grouped (`zz4k-1q`) as it is typed, while leaving a
+	 * url (which contains `:`/`/`/`.`) untouched. Hyphens are cosmetic — parsing
+	 * strips them, so typing or pasting either form works.
+	 */
+	function reformatCode(event: Event) {
+		const value = (event.currentTarget as HTMLInputElement).value;
+		input = /[:/.]/.test(value) ? value : formatShareCode(value);
 	}
 
 	function beginRename(session: Session) {
@@ -312,9 +322,10 @@
 							autocomplete="off"
 							autocapitalize="off"
 							spellcheck="false"
-							placeholder="e.g. zz4k1q"
+							placeholder="e.g. zz4k-1q"
 							bind:this={inputEl}
-							bind:value={input}
+							value={input}
+							oninput={reformatCode}
 							class="w-full rounded-lg border border-neutral-300 bg-white px-4 py-3 font-mono text-sm text-neutral-900 placeholder:text-neutral-400 focus:border-neutral-500 focus:ring-2 focus:ring-neutral-200 focus:outline-none"
 						/>
 						{#if error}

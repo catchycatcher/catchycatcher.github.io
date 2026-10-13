@@ -65,6 +65,8 @@
 	let scrapbookBusy = $state(false);
 	let scrapbookError = $state<string | null>(null);
 	let dragOverScrapbook = $state(false);
+	/** True while an edited scrapbook's mix is (re)rendering. */
+	let renderPending = $state(false);
 
 	const recorder = new Recorder();
 	let segmentStartedAt = $state(0);
@@ -323,13 +325,9 @@
 		);
 	}
 
-	function journalLinePayload(entry: Entry, lineIndex: number): string | null {
+	function journalLineRef(entry: Entry, lineIndex: number): LineRef | null {
 		if (!entry.serverId || entry.status !== 'done') return null;
-		return JSON.stringify({
-			session_id: sessionId,
-			take_id: entry.serverId,
-			line_index: lineIndex
-		} satisfies LineRef);
+		return { session_id: sessionId, take_id: entry.serverId, line_index: lineIndex };
 	}
 
 	// --- Scrapbooks --------------------------------------------------------
@@ -420,13 +418,27 @@
 		const url = api.url;
 		if (!url || !activeScrapbookId) return;
 		scrapbookBusy = true;
+		renderPending = true;
 		scrapbookError = null;
+
+		// Show the change immediately; the mix catches up once it re-renders.
+		if (scrapbook) {
+			scrapbook = {
+				...scrapbook,
+				name: body.name ?? scrapbook.name,
+				bpm: body.bpm ?? scrapbook.bpm,
+				lines: body.lines ?? scrapbook.lines,
+				bpm_manual: body.bpm !== undefined ? true : scrapbook.bpm_manual
+			};
+		}
+
 		try {
 			scrapbook = await updateScrapbook(url, activeScrapbookId, body);
 			await refreshScrapbooks(url);
 			await renderActive();
 		} catch (saveError) {
 			scrapbookError = saveError instanceof Error ? saveError.message : 'Could not save.';
+			renderPending = false;
 		} finally {
 			scrapbookBusy = false;
 		}
@@ -434,52 +446,66 @@
 
 	async function renderActive() {
 		const url = api.url;
-		if (!url || !activeScrapbookId || !scrapbook?.lines.length) return;
+		if (!url || !activeScrapbookId || !scrapbook?.lines.length) {
+			renderPending = false;
+			return;
+		}
 		scrapbookBusy = true;
+		renderPending = true;
 		try {
 			const render = await renderScrapbook(url, activeScrapbookId);
 			if (scrapbook) scrapbook = { ...scrapbook, render, rendered: true };
 		} catch (renderError) {
 			scrapbookError = renderError instanceof Error ? renderError.message : 'Could not render.';
 		} finally {
+			renderPending = false;
 			scrapbookBusy = false;
 		}
 	}
 
-	function linesWith(insert: LineRef | null, at?: number, remove?: number): LineRef[] {
-		const current = scrapbook ? [...scrapbook.lines] : [];
-		if (remove !== undefined) current.splice(remove, 1);
-		if (insert) current.splice(at ?? current.length, 0, insert);
-		return current;
+	function saveLines(lines: LineRef[]) {
+		void saveScrapbook({ lines });
 	}
 
-	function addLineAt(ref: LineRef, at?: number) {
-		void saveScrapbook({ lines: linesWith(ref, at) });
+	function addLinesAt(refs: LineRef[], index?: number) {
+		const current = scrapbook ? [...scrapbook.lines] : [];
+		current.splice(index ?? current.length, 0, ...refs);
+		saveLines(current);
 	}
 
 	function removeLineAt(index: number) {
-		void saveScrapbook({ lines: linesWith(null, undefined, index) });
+		const current = scrapbook ? [...scrapbook.lines] : [];
+		current.splice(index, 1);
+		saveLines(current);
 	}
 
-	function moveLine(from: number, to: number) {
-		if (from === to) return;
+	/** Move the selected indices together so they land before ``to``. */
+	function moveLines(from: number[], to: number) {
 		const current = scrapbook ? [...scrapbook.lines] : [];
-		if (from < 0 || from >= current.length) return;
-		const [moved] = current.splice(from, 1);
-		current.splice(Math.max(0, Math.min(current.length, to)), 0, moved);
-		void saveScrapbook({ lines: current });
+		const valid = from
+			.filter((index) => index >= 0 && index < current.length)
+			.sort((a, b) => a - b);
+		if (!valid.length) return;
+
+		const moving = valid.map((index) => current[index]);
+		const removedBefore = valid.filter((index) => index < to).length;
+		const remaining = current.filter((_line, index) => !valid.includes(index));
+		const target = Math.max(0, Math.min(remaining.length, to - removedBefore));
+		remaining.splice(target, 0, ...moving);
+		saveLines(remaining);
 	}
 
 	function onScrapbookDrop(event: DragEvent) {
 		event.preventDefault();
 		dragOverScrapbook = false;
-		const payload = event.dataTransfer?.getData('application/x-catchy-line');
+		const payload = event.dataTransfer?.getData('application/x-catchy-lines');
 		if (!payload) return;
-		addLineAt(JSON.parse(payload) as LineRef);
-	}
-
-	function scrapbookDropLine(payload: string, index: number) {
-		addLineAt(JSON.parse(payload) as LineRef, index);
+		try {
+			const refs: unknown = JSON.parse(payload);
+			if (Array.isArray(refs)) addLinesAt(refs as LineRef[]);
+		} catch {
+			/* ignore malformed drag data */
+		}
 	}
 
 	function lineLabel(ref: LineRef): string {
@@ -492,11 +518,33 @@
 		return text || `Line ${ref.line_index + 1}`;
 	}
 
-	/** Rendered lines when available, otherwise plain text bubbles for editing. */
+	/** True when the stored render's lines match the scrapbook's current lines. */
+	function renderMatchesLines(book: Scrapbook | null): boolean {
+		const timeline = book?.render?.timeline;
+		if (!book || !timeline?.length || timeline.length !== book.lines.length) return false;
+		return book.lines.every((ref, index) => {
+			const source = timeline[index].source;
+			return (
+				source &&
+				source.session_id === ref.session_id &&
+				source.take_id === ref.take_id &&
+				source.line_index === ref.line_index
+			);
+		});
+	}
+
+	let renderInSync = $derived(!renderPending && renderMatchesLines(scrapbook));
+	let scrapbookLoading = $derived(Boolean(scrapbook?.lines.length) && !renderInSync);
+
+	/**
+	 * The bubbles to show, always in the scrapbook's line order. Each line uses
+	 * the rendered timings when the render is current, and plain text while a
+	 * change is still rendering (so reorders show up immediately).
+	 */
 	function scrapbookLinesFor(): LyricLine[] {
 		const book = scrapbook;
 		if (!book) return [];
-		if (book.render?.timeline?.length) return book.render.timeline;
+		if (renderInSync && book.render?.timeline?.length) return book.render.timeline;
 		return book.lines.map((ref) => ({
 			bpm: book.bpm,
 			'start time': 0,
@@ -508,7 +556,7 @@
 	let scrapbookLines = $derived(scrapbookLinesFor());
 
 	let scrapbookSrc = $derived(
-		api.url && activeScrapbookId && scrapbook?.render
+		api.url && activeScrapbookId && scrapbook?.render && renderInSync
 			? `${scrapbookAudioUrl(api.url, activeScrapbookId)}?v=${encodeURIComponent(scrapbook.render.rendered_at ?? '')}`
 			: ''
 	);
@@ -688,9 +736,10 @@
 							<EntryPlayer
 								src={scrapbookSrc}
 								lyrics={scrapbookLines}
+								loading={scrapbookLoading}
 								allowReorder
-								onDropLine={scrapbookDropLine}
-								onReorder={moveLine}
+								onDropLines={(refs, index) => addLinesAt(refs as LineRef[], index)}
+								onMoveLines={moveLines}
 								onRemove={removeLineAt}
 							/>
 							{#if !scrapbook.render?.timeline?.length && !scrapbookBusy}
@@ -837,7 +886,7 @@
 										<EntryPlayer
 											src={entryAudio(entry)}
 											lyrics={entry.lyrics}
-											dragPayload={(lineIndex: number) => journalLinePayload(entry, lineIndex)}
+											dragLine={(lineIndex) => journalLineRef(entry, lineIndex)}
 										/>
 									{:else if entryAudio(entry)}
 										<audio controls src={entryAudio(entry)} class="w-full"></audio>

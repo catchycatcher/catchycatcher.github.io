@@ -4,21 +4,25 @@
 	let {
 		src,
 		lyrics,
-		dragPayload,
+		loading = false,
+		dragLine,
 		allowReorder = false,
-		onDropLine,
-		onReorder,
+		onDropLines,
+		onMoveLines,
 		onRemove
 	}: {
 		src: string;
 		lyrics: LyricLine[];
-		/** When set, each bubble drags out this payload (journal → scrapbook). */
-		dragPayload?: (lineIndex: number) => string | null;
-		/** Allow bubbles to be dragged to reorder within this player. */
+		/** Show a spinner on the play button (e.g. while the mix re-renders). */
+		loading?: boolean;
+		/** Per-line payload for dragging out (journal → scrapbook); null = no drag. */
+		dragLine?: (lineIndex: number) => unknown | null;
+		/** Allow dragging the selection to reorder within this player. */
 		allowReorder?: boolean;
-		/** Accept a dragged line payload dropped at ``index``. */
-		onDropLine?: (payload: string, index: number) => void;
-		onReorder?: (from: number, to: number) => void;
+		/** A selection of lines dropped in at ``index``. */
+		onDropLines?: (refs: unknown[], index: number) => void;
+		/** Move the selected line indices to sit before ``index``. */
+		onMoveLines?: (from: number[], to: number) => void;
 		onRemove?: (index: number) => void;
 	} = $props();
 
@@ -30,6 +34,10 @@
 	let playing = $state(false);
 	let currentTime = $state(0);
 	let duration = $state(0);
+	/** Indices the user has selected (click / shift-click). */
+	let selected = $state<number[]>([]);
+	/** Where a shift-click range starts from. */
+	let anchor = $state<number | null>(null);
 
 	/** Give every word a start/end, deriving them when the server omits them. */
 	function resolve(rawLines: LyricLine[]): Line[] {
@@ -82,9 +90,18 @@
 
 	let lines = $derived(resolve(lyrics));
 	let playable = $derived(Boolean(src));
-	let droppable = $derived(Boolean(onDropLine || onReorder));
+	let selectable = $derived(Boolean(dragLine || allowReorder));
+	let droppable = $derived(Boolean(onDropLines || onMoveLines));
 	let activeLine = $derived(playable ? findLine(lines, currentTime) : -1);
 	let activeWord = $derived(findWord(lines[activeLine]?.words ?? [], currentTime));
+
+	// A new line set (re-render, reorder, add) invalidates any selection.
+	$effect(() => {
+		const current = lyrics;
+		selected = [];
+		anchor = null;
+		void current;
+	});
 
 	// Keep the line being sung in view as playback moves along.
 	$effect(() => {
@@ -110,10 +127,15 @@
 		return () => cancelAnimationFrame(frame);
 	});
 
+	/** Pressing play starts at the first selected line, else resumes/pauses. */
 	function toggle() {
 		if (!audio || !playable) return;
-		if (audio.paused) void audio.play();
-		else audio.pause();
+		if (playing) {
+			audio.pause();
+			return;
+		}
+		const start = selected.length ? lines[selected[0]]?.start : undefined;
+		playFrom(start ?? audio.currentTime);
 	}
 
 	function playFrom(seconds: number) {
@@ -127,32 +149,63 @@
 		playFrom(Number((event.currentTarget as HTMLInputElement).value));
 	}
 
+	function onLineClick(index: number, event: MouseEvent) {
+		if (!selectable) {
+			playFrom(lines[index].start);
+			return;
+		}
+		if (event.shiftKey && anchor !== null) {
+			const low = Math.min(anchor, index);
+			const high = Math.max(anchor, index);
+			selected = Array.from({ length: high - low + 1 }, (_unused, step) => low + step);
+			return;
+		}
+		selected = [index];
+		anchor = index;
+	}
+
+	function selectedIndices(index: number): number[] {
+		const indices = selected.includes(index) ? selected : [index];
+		return [...indices].sort((a, b) => a - b);
+	}
+
 	function dragStart(event: DragEvent, index: number) {
 		if (!event.dataTransfer) return;
-		if (dragPayload) {
-			const payload = dragPayload(index);
-			if (!payload) return;
-			event.dataTransfer.setData('application/x-catchy-line', payload);
+		const indices = selectedIndices(index);
+		if (dragLine) {
+			const refs = indices.map((item) => dragLine(item)).filter((ref) => ref != null);
+			if (!refs.length) return;
+			event.dataTransfer.setData('application/x-catchy-lines', JSON.stringify(refs));
 			event.dataTransfer.effectAllowed = 'copy';
 		} else if (allowReorder) {
-			event.dataTransfer.setData('application/x-catchy-index', String(index));
+			event.dataTransfer.setData('application/x-catchy-indices', JSON.stringify(indices));
 			event.dataTransfer.effectAllowed = 'move';
 		}
 	}
 
 	function dropAt(event: DragEvent, index: number) {
-		const external = event.dataTransfer?.getData('application/x-catchy-line');
-		if (external && onDropLine) {
+		const external = event.dataTransfer?.getData('application/x-catchy-lines');
+		if (external && onDropLines) {
 			event.preventDefault();
 			event.stopPropagation();
-			onDropLine(external, index);
+			try {
+				const refs: unknown = JSON.parse(external);
+				if (Array.isArray(refs)) onDropLines(refs, index);
+			} catch {
+				/* ignore malformed drag data */
+			}
 			return;
 		}
-		const from = event.dataTransfer?.getData('application/x-catchy-index');
-		if (from !== undefined && from !== '' && onReorder) {
+		const internal = event.dataTransfer?.getData('application/x-catchy-indices');
+		if (internal && onMoveLines) {
 			event.preventDefault();
 			event.stopPropagation();
-			onReorder(Number(from), index);
+			try {
+				const from: unknown = JSON.parse(internal);
+				if (Array.isArray(from)) onMoveLines(from as number[], index);
+			} catch {
+				/* ignore malformed drag data */
+			}
 		}
 	}
 
@@ -168,11 +221,17 @@
 		<button
 			type="button"
 			onclick={toggle}
-			aria-label={playing ? 'Pause' : 'Play'}
-			disabled={!playable}
+			aria-label={loading ? 'Rendering…' : playing ? 'Pause' : 'Play'}
+			disabled={!playable || loading}
+			title={selected.length ? 'Play from the first selected line' : 'Play'}
 			class="flex size-9 shrink-0 items-center justify-center rounded-full bg-neutral-900 text-white hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-40"
 		>
-			{#if playing}
+			{#if loading}
+				<span
+					class="size-4 animate-spin rounded-full border-2 border-white/40 border-t-white"
+					aria-hidden="true"
+				></span>
+			{:else if playing}
 				<svg viewBox="0 0 24 24" class="size-4 fill-current" aria-hidden="true">
 					<rect x="6" y="5" width="4" height="14" rx="1" />
 					<rect x="14" y="5" width="4" height="14" rx="1" />
@@ -229,13 +288,16 @@
 				<button
 					type="button"
 					data-active={index === activeLine}
-					draggable={Boolean(dragPayload || allowReorder)}
+					data-selected={selected.includes(index)}
+					draggable={Boolean(dragLine || allowReorder)}
 					ondragstart={(event) => dragStart(event, index)}
-					onclick={() => playFrom(line.start)}
+					onclick={(event) => onLineClick(index, event)}
 					class="w-fit max-w-full rounded-xl border px-2.5 py-1 text-left text-sm leading-snug transition-colors {index ===
 					activeLine
 						? 'border-neutral-900 bg-white'
-						: 'border-neutral-200 bg-white/60 hover:bg-white'}"
+						: selected.includes(index)
+							? 'border-amber-400 bg-amber-50'
+							: 'border-neutral-200 bg-white/60 hover:bg-white'}"
 				>
 					{#each line.words as word, wordIndex (wordIndex)}
 						<span

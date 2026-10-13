@@ -39,6 +39,8 @@ export type LyricLine = {
 	'start time': number;
 	'end time': number;
 	words: LyricWord[];
+	/** Scrapbook renders tag each line with the take it came from. */
+	source?: { session_id: string; take_id: string; line_index: number };
 };
 
 /** The payload returned once a take has been processed. */

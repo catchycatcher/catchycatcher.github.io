@@ -19,10 +19,50 @@ export function apiUrlForShareCode(code: string): string {
 }
 
 /**
+ * Strip everything that is not a base62 character, so a code that the user
+ * typed or pasted with hyphens/spaces can be compared/used.
+ */
+export function normalizeShareCode(raw: string): string {
+	return raw.replace(/[^0-9A-Za-z]/g, '');
+}
+
+/**
+ * The group sizes a code of ``length`` characters splits into.
+ *
+ * Groups of four, with the tail arranged so there is never a stray one or two:
+ * one left over becomes a group of five, two left over become two groups of
+ * three, three left over stay as a group of four and a group of three.
+ */
+export function codeGroupSizes(length: number): number[] {
+	if (length <= 0) return [];
+	const full = Math.floor(length / 4);
+	const remainder = length % 4;
+	if (remainder === 0) return Array(full).fill(4);
+	if (full === 0) return [length];
+	if (remainder === 1) return [...Array(full - 1).fill(4), 5];
+	if (remainder === 2) return [...Array(full - 1).fill(4), 3, 3];
+	return [...Array(full).fill(4), 3];
+}
+
+/** Render a code with a hyphen every four characters (see {@link codeGroupSizes}). */
+export function formatShareCode(code: string): string {
+	const clean = normalizeShareCode(code);
+	if (!clean) return '';
+	const groups: string[] = [];
+	let cursor = 0;
+	for (const size of codeGroupSizes(clean.length)) {
+		groups.push(clean.slice(cursor, cursor + size));
+		cursor += size;
+	}
+	return groups.join('-');
+}
+
+/**
  * Work out what the user gave us: a base62 share code, or a whole url.
  *
  * Accepts anything that looks like a url (`https://x/y`, `x.gradio.live`) and
- * otherwise requires a valid base62 share code.
+ * otherwise requires a valid base62 share code. Hyphens (and other separators)
+ * in a code are ignored, so a grouped code like `zz4k-1q` is accepted.
  */
 export function parseShareInput(raw: string): ParseResult {
 	const value = raw.trim();
@@ -51,14 +91,15 @@ export function parseShareInput(raw: string): ParseResult {
 		return { kind: 'url', url: url.origin + path + url.search };
 	}
 
-	if (!/^[0-9A-Za-z]+$/.test(value)) {
+	const code = normalizeShareCode(value);
+	if (!code) {
 		return {
 			kind: 'invalid',
 			message: `"${value}" is not a valid share code — use letters and digits only.`
 		};
 	}
 
-	return { kind: 'share-code', code: value };
+	return { kind: 'share-code', code };
 }
 
 /** Resolve a parsed input down to the url we will actually call. */
@@ -69,7 +110,8 @@ export function toApiUrl(input: ShareInput): string {
 /** The in-app href that reproduces a given input, keeping the address bar shareable. */
 export function toHref(input: ShareInput): `/?${string}` {
 	const key = input.kind === 'url' ? 'url' : 'share_code';
-	const value = input.kind === 'url' ? input.url : input.code;
+	// Show a code grouped in the address bar; parsing strips the hyphens back out.
+	const value = input.kind === 'url' ? input.url : formatShareCode(input.code);
 	return `/?${key}=${encodeURIComponent(value)}`;
 }
 
