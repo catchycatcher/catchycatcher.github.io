@@ -476,7 +476,7 @@
 		bind:this={listEl}
 		role="list"
 		aria-label="Lines"
-		class="relative flex max-h-72 flex-col gap-1 overflow-y-auto select-none"
+		class="relative flex flex-col gap-1 select-none"
 		ondragover={onListDragOver}
 		ondragleave={onListDragLeave}
 		ondrop={onListDrop}

@@ -70,6 +70,17 @@
 	let dragOverScrapbook = $state(false);
 	/** True while an edited scrapbook's mix is (re)rendering. */
 	let renderPending = $state(false);
+	/** The open scrapbook's name, edited in place in the selector field. */
+	let scrapbookNameDraft = $state('');
+	/** Whether the scrapbook picker list is showing. */
+	let scrapbookMenuOpen = $state(false);
+	/** Guards against creating two "default" scrapbooks at once. */
+	let autoCreateInFlight = false;
+
+	/** Split-pane: how much of the row the scrapbook gets, in percent. */
+	let splitPercent = $state(50);
+	let splitEl = $state<HTMLDivElement | null>(null);
+	let resizing = $state(false);
 
 	const recorder = new Recorder();
 	let segmentStartedAt = $state(0);
@@ -118,6 +129,47 @@
 		tab === 'bookmarked' ? entries.filter((entry) => entry.bookmarked) : entries
 	);
 	let pageTitle = $derived(sessionName ? `${sessionName} — Catchy Catcher` : 'Catchy Catcher');
+
+	// Keep the editable name field in step with the open scrapbook (including
+	// after a rename or switching to another one). Leave it alone while the
+	// scrapbook is mid-load so the user's typing isn't clobbered.
+	$effect(() => {
+		if (scrapbook) scrapbookNameDraft = scrapbook.name;
+	});
+
+	/** Drag the divider to repartition the scrapbook and journal columns. */
+	function startResize(event: PointerEvent) {
+		if (event.button !== 0) return;
+		event.preventDefault();
+		resizing = true;
+		try {
+			(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+		} catch {
+			/* pointer capture is best-effort */
+		}
+	}
+
+	function moveResize(event: PointerEvent) {
+		if (!resizing || !splitEl) return;
+		const rect = splitEl.getBoundingClientRect();
+		if (rect.width === 0) return;
+		const percent = ((event.clientX - rect.left) / rect.width) * 100;
+		splitPercent = Math.min(80, Math.max(20, percent));
+	}
+
+	function endResize(event: PointerEvent) {
+		if (!resizing) return;
+		resizing = false;
+		try {
+			(event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
+		} catch {
+			/* already released */
+		}
+	}
+
+	function nudgeResize(delta: number) {
+		splitPercent = Math.min(80, Math.max(20, splitPercent + delta));
+	}
 
 	function normalizeStatus(status: string | undefined): EntryStatus {
 		if (status === 'done' || status === 'processing' || status === 'error') return status;
@@ -338,10 +390,70 @@
 	async function refreshScrapbooks(url: string) {
 		try {
 			scrapbooks = await listScrapbooks(url);
+			if (scrapbooks.length === 0) {
+				// There is always an open scrapbook: make an empty one to start.
+				await ensureScrapbook(url);
+				return;
+			}
+			const open = scrapbooks.some((item) => item.scrapbook_id === activeScrapbookId);
+			if (!open) await selectScrapbook(scrapbooks[0].scrapbook_id);
 		} catch (listError) {
 			scrapbookError =
 				listError instanceof Error ? listError.message : 'Could not load scrapbooks.';
 		}
+	}
+
+	/** Create the default empty scrapbook when the server has none. */
+	async function ensureScrapbook(url: string) {
+		if (autoCreateInFlight) return;
+		autoCreateInFlight = true;
+		try {
+			const created = await createScrapbook(url, { name: newEntryName(), lines: [] });
+			scrapbooks = [created, ...scrapbooks];
+			await selectScrapbook(created.scrapbook_id);
+		} catch (createError) {
+			scrapbookError =
+				createError instanceof Error ? createError.message : 'Could not create a scrapbook.';
+		} finally {
+			autoCreateInFlight = false;
+		}
+	}
+
+	/** Commit the name field: pick an existing scrapbook, else rename the open one. */
+	function commitScrapbookName() {
+		scrapbookMenuOpen = false;
+		const value = scrapbookNameDraft.trim();
+		if (!scrapbook) {
+			scrapbookNameDraft = '';
+			return;
+		}
+		if (!value) {
+			scrapbookNameDraft = scrapbook.name;
+			return;
+		}
+		const match = scrapbooks.find((item) => item.name.trim() === value);
+		if (match && match.scrapbook_id !== activeScrapbookId) {
+			void selectScrapbook(match.scrapbook_id);
+			return;
+		}
+		if (value !== scrapbook.name) void saveScrapbook({ name: value });
+	}
+
+	function onScrapbookNameKeydown(event: KeyboardEvent) {
+		if (event.key === 'Enter') {
+			event.preventDefault();
+			(event.currentTarget as HTMLInputElement).blur();
+		} else if (event.key === 'Escape') {
+			event.preventDefault();
+			scrapbookNameDraft = scrapbook?.name ?? '';
+			(event.currentTarget as HTMLInputElement).blur();
+		}
+	}
+
+	function chooseScrapbook(item: ScrapbookSummary) {
+		scrapbookMenuOpen = false;
+		scrapbookNameDraft = item.name;
+		if (item.scrapbook_id !== activeScrapbookId) void selectScrapbook(item.scrapbook_id);
 	}
 
 	async function selectScrapbook(id: string) {
@@ -659,7 +771,7 @@
 	<meta name="theme-color" content="#ffffff" />
 </svelte:head>
 
-<main class="flex min-h-dvh flex-col bg-white text-neutral-900">
+<main class="flex min-h-dvh flex-col bg-white text-neutral-900 lg:h-dvh lg:overflow-hidden">
 	<header class="flex items-start justify-between gap-4 border-b border-neutral-100 px-6 py-3">
 		<div class="min-w-0">
 			<a
@@ -675,7 +787,7 @@
 		</a>
 	</header>
 
-	<div class="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-5 px-4 py-5 sm:px-6">
+	<div class="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-5 px-4 py-5 sm:px-6 lg:min-h-0">
 		{#if !ready}
 			<p class="text-sm text-neutral-400">Loading…</p>
 		{:else if connection.status === 'checking'}
@@ -742,52 +854,85 @@
 				<p class="text-center text-xs text-red-600">{error}</p>
 			{/if}
 
-			<div class="grid flex-1 grid-cols-1 gap-5 lg:grid-cols-2">
+			<div bind:this={splitEl} class="flex min-h-0 flex-1 flex-col gap-5 lg:flex-row lg:gap-0">
 				<!-- Scrapbook (left) -->
-				<section class="order-2 flex flex-col gap-3 lg:order-1">
+				<section
+					class="order-2 flex flex-col gap-3 lg:order-1 lg:min-h-0 lg:w-[var(--split)] lg:min-w-0 lg:shrink-0 lg:overflow-y-auto lg:pr-4"
+					style="--split:{splitPercent}%"
+				>
 					<div class="flex items-center justify-between gap-2">
 						<h2 class="text-xs font-medium tracking-wide text-neutral-500 uppercase">Scrapbook</h2>
-						<button
-							onclick={newScrapbook}
-							disabled={scrapbookBusy}
-							class="rounded-md px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100 disabled:opacity-50"
-						>
-							New
-						</button>
+						<div class="flex items-center gap-1">
+							<button
+								onclick={newScrapbook}
+								disabled={scrapbookBusy}
+								class="rounded-md px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100 disabled:opacity-50"
+							>
+								New
+							</button>
+							<button
+								onclick={removeScrapbook}
+								disabled={scrapbookBusy || !activeScrapbookId}
+								class="rounded-md px-2 py-1 text-xs text-neutral-500 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
+							>
+								Delete
+							</button>
+						</div>
 					</div>
 
-					<select
-						value={activeScrapbookId}
-						onchange={(event) => selectScrapbook((event.currentTarget as HTMLSelectElement).value)}
-						class="rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm"
-					>
-						<option value="">Select a scrapbook…</option>
-						{#each scrapbooks as item (item.scrapbook_id)}
-							<option value={item.scrapbook_id}>{item.name} ({item.line_count})</option>
-						{/each}
-					</select>
+					<!-- One field: type to rename the open scrapbook, or open the list to switch. -->
+					<div class="relative">
+						<input
+							bind:value={scrapbookNameDraft}
+							oninput={() => (scrapbookMenuOpen = true)}
+							onfocus={() => (scrapbookMenuOpen = true)}
+							onkeydown={onScrapbookNameKeydown}
+							onblur={commitScrapbookName}
+							placeholder="Scrapbook name"
+							aria-label="Scrapbook name"
+							class="w-full rounded-lg border border-neutral-300 bg-white py-2 pr-9 pl-3 text-sm focus:border-neutral-500 focus:outline-none"
+						/>
+						<button
+							type="button"
+							tabindex="-1"
+							aria-label="Show scrapbooks"
+							onmousedown={(event) => event.preventDefault()}
+							onclick={() => (scrapbookMenuOpen = !scrapbookMenuOpen)}
+							class="absolute inset-y-0 right-0 flex w-8 items-center justify-center rounded-r-lg text-neutral-400 hover:text-neutral-700"
+						>
+							<svg viewBox="0 0 24 24" class="size-4 fill-current" aria-hidden="true">
+								<path d="m7 10 5 5 5-5z" />
+							</svg>
+						</button>
+						{#if scrapbookMenuOpen && scrapbooks.length > 1}
+							<ul
+								class="absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-neutral-200 bg-white py-1 shadow-lg"
+							>
+								{#each scrapbooks as item (item.scrapbook_id)}
+									<li>
+										<button
+											type="button"
+											onmousedown={(event) => event.preventDefault()}
+											onclick={() => chooseScrapbook(item)}
+											class="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-sm {item.scrapbook_id ===
+											activeScrapbookId
+												? 'bg-neutral-100 font-medium'
+												: 'hover:bg-neutral-50'}"
+										>
+											<span class="truncate">{item.name}</span>
+											<span class="shrink-0 text-xs text-neutral-400">{item.line_count}</span>
+										</button>
+									</li>
+								{/each}
+							</ul>
+						{/if}
+					</div>
 
 					{#if scrapbookError}
 						<p class="text-xs text-red-600">{scrapbookError}</p>
 					{/if}
 
 					{#if scrapbook}
-						<div class="flex items-center gap-2">
-							<input
-								value={scrapbook.name}
-								onchange={(event) =>
-									saveScrapbook({ name: (event.currentTarget as HTMLInputElement).value })}
-								aria-label="Scrapbook name"
-								class="min-w-0 flex-1 rounded-lg border border-neutral-300 bg-white px-3 py-1.5 text-sm"
-							/>
-							<button
-								onclick={removeScrapbook}
-								class="shrink-0 rounded-md px-2 py-1 text-xs text-neutral-500 hover:bg-red-50 hover:text-red-600"
-							>
-								Delete
-							</button>
-						</div>
-
 						<!-- Lines live in the player: drag to add/reorder, × to remove -->
 						{#if scrapbook.lines.length === 0}
 							<div
@@ -833,8 +978,37 @@
 					{/if}
 				</section>
 
+				<!-- Draggable divider: give either side more room. -->
+				<button
+					type="button"
+					aria-label="Resize scrapbook and journal"
+					title="Drag to resize"
+					class="group relative hidden w-3 shrink-0 cursor-col-resize touch-none select-none lg:order-2 lg:block"
+					onpointerdown={startResize}
+					onpointermove={moveResize}
+					onpointerup={endResize}
+					onpointercancel={endResize}
+					onkeydown={(event) => {
+						if (event.key === 'ArrowLeft') {
+							event.preventDefault();
+							nudgeResize(-2);
+						} else if (event.key === 'ArrowRight') {
+							event.preventDefault();
+							nudgeResize(2);
+						}
+					}}
+				>
+					<span
+						class="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 transition-colors {resizing
+							? 'bg-neutral-900'
+							: 'bg-neutral-200 group-hover:bg-neutral-400'}"
+					></span>
+				</button>
+
 				<!-- Journal (right) -->
-				<section class="order-1 flex flex-col gap-3 lg:order-2">
+				<section
+					class="order-1 flex flex-col gap-3 lg:order-3 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pl-4"
+				>
 					<div class="flex items-center justify-between gap-2">
 						<div class="flex items-center gap-1">
 							<button
