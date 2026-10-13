@@ -589,48 +589,50 @@
 				<p class="text-sm text-neutral-500">Connecting…</p>
 			</div>
 		{:else if api.url}
-			<div class="space-y-6">
-				<div class="space-y-1 text-center">
+			<div class="flex flex-col gap-6">
+				<div class="order-1 space-y-1 text-center">
 					<h1 class="text-2xl font-semibold tracking-tight">Connected</h1>
 					<p class="text-sm text-neutral-500">You're connected to your processing server.</p>
 				</div>
 
-				<button
-					type="button"
-					onclick={toggleSharedMic}
-					class="flex w-full items-center justify-center gap-2 rounded-2xl border px-4 py-4 text-base font-medium transition-colors {micSharer.sharing
-						? 'border-red-300 bg-red-50 text-red-700'
-						: 'border-neutral-300 bg-white text-neutral-800 hover:bg-neutral-50'}"
-				>
-					{#if micSharer.sharing}
-						<span class="size-2.5 animate-pulse rounded-full bg-red-500"></span>
-					{:else}
-						<svg
-							viewBox="0 0 24 24"
-							class="size-5"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							aria-hidden="true"
-						>
-							<rect x="9" y="3" width="6" height="11" rx="3" />
-							<path d="M5 11a7 7 0 0 0 14 0" />
-							<path d="M12 18v3" />
-						</svg>
-					{/if}
-					{micSharer.sharing ? 'Sharing microphone — tap to stop' : 'Share microphone'}
-				</button>
-				<p class="text-center text-xs text-neutral-500">
-					{micSharer.sharing
-						? "Open a session on a computer to record through this phone's mic."
-						: micSharer.error
-							? micSharer.error
-							: 'Turn this phone into the microphone for a computer on the same server.'}
-				</p>
+				<div class="order-2 space-y-2 sm:order-5">
+					<button
+						type="button"
+						onclick={toggleSharedMic}
+						class="flex w-full items-center justify-center gap-2 rounded-2xl border px-4 py-4 text-base font-medium transition-colors {micSharer.sharing
+							? 'border-red-300 bg-red-50 text-red-700'
+							: 'border-neutral-300 bg-white text-neutral-800 hover:bg-neutral-50'}"
+					>
+						{#if micSharer.sharing}
+							<span class="size-2.5 animate-pulse rounded-full bg-red-500"></span>
+						{:else}
+							<svg
+								viewBox="0 0 24 24"
+								class="size-5"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								aria-hidden="true"
+							>
+								<rect x="9" y="3" width="6" height="11" rx="3" />
+								<path d="M5 11a7 7 0 0 0 14 0" />
+								<path d="M12 18v3" />
+							</svg>
+						{/if}
+						{micSharer.sharing ? 'Sharing microphone — tap to stop' : 'Share microphone'}
+					</button>
+					<p class="text-center text-xs text-neutral-500">
+						{micSharer.sharing
+							? "Open a session on a computer to record through this phone's mic."
+							: micSharer.error
+								? micSharer.error
+								: 'Turn this phone into the microphone for a computer on the same server.'}
+					</p>
+				</div>
 
-				<div class="flex flex-col gap-3 sm:flex-row">
+				<div class="order-2 hidden flex-col gap-3 sm:flex sm:flex-row">
 					<button
 						onclick={handleNewSession}
 						disabled={connection.busy}
@@ -647,10 +649,10 @@
 				</div>
 
 				{#if connection.error}
-					<p class="text-center text-xs text-red-600">{connection.error}</p>
+					<p class="order-2 text-center text-xs text-red-600">{connection.error}</p>
 				{/if}
 
-				<section class="space-y-3">
+				<section class="order-3 hidden space-y-3 sm:block">
 					<div class="flex items-center justify-between gap-2">
 						<button
 							type="button"
@@ -779,7 +781,7 @@
 					{/if}
 				</section>
 
-				<section class="space-y-3">
+				<section class="order-3 space-y-3 sm:order-4">
 					<button
 						type="button"
 						onclick={toggleScribblesSection}
@@ -996,6 +998,14 @@
 						{/if}
 					{/if}
 				</section>
+
+				<button
+					type="button"
+					onclick={handleDisconnect}
+					class="order-6 text-center text-xs text-neutral-400 hover:text-neutral-700 sm:hidden"
+				>
+					Disconnect
+				</button>
 			</div>
 		{:else}
 			<div class="space-y-6">
