@@ -61,6 +61,13 @@
 	let editingId = $state<string | null>(null);
 	let nameDraft = $state('');
 
+	/** Which journal entries show their lyrics player (default: collapsed). */
+	let expandedEntries = $state<Record<string, boolean>>({});
+
+	function toggleEntry(localId: string) {
+		expandedEntries[localId] = !expandedEntries[localId];
+	}
+
 	/** Scrapbooks. */
 	let scrapbooks = $state<ScrapbookSummary[]>([]);
 	let activeScrapbookId = $state('');
@@ -1087,10 +1094,35 @@
 							{#each visibleEntries as entry (entry.localId)}
 								<li
 									data-take-id={entry.serverId ?? undefined}
-									class="space-y-3 rounded-xl border border-neutral-200 bg-white px-4 py-3"
+									class="space-y-3 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3"
 								>
 									<div class="flex items-center justify-between gap-3">
 										<div class="flex min-w-0 flex-1 items-center gap-2">
+											<button
+												type="button"
+												onclick={() => toggleEntry(entry.localId)}
+												aria-expanded={Boolean(expandedEntries[entry.localId])}
+												aria-label={expandedEntries[entry.localId]
+													? 'Collapse entry'
+													: 'Expand entry'}
+												title={expandedEntries[entry.localId] ? 'Collapse' : 'Expand'}
+												class="shrink-0 rounded-md p-1 text-neutral-400 hover:bg-neutral-200 hover:text-neutral-700"
+											>
+												<svg
+													viewBox="0 0 24 24"
+													class="size-4 transition-transform {expandedEntries[entry.localId]
+														? 'rotate-90'
+														: ''}"
+													fill="none"
+													stroke="currentColor"
+													stroke-width="2"
+													stroke-linecap="round"
+													stroke-linejoin="round"
+													aria-hidden="true"
+												>
+													<path d="m9 6 6 6-6 6" />
+												</svg>
+											</button>
 											<span class="font-mono text-xs text-neutral-400"
 												>{String(entry.index).padStart(2, '0')}</span
 											>
@@ -1179,23 +1211,27 @@
 										<p class="text-xs text-red-600">{entry.error}</p>
 									{/if}
 
-									{#if entry.status === 'done' && entryAudio(entry)}
-										<EntryPlayer
-											src={entryAudio(entry)}
-											lyrics={entry.lyrics}
-											downloadName={entry.name}
-											dragLine={(lineIndex) => journalLineRef(entry, lineIndex)}
-											onEditLine={(lineIndex, text) => editLine(entry, lineIndex, text)}
-											onMergeSelected={(indices) => mergeSelectedLines(entry, indices)}
-											onCarve={(lineIndex, from, to) => carveLine(entry, lineIndex, from, to)}
-										/>
-									{:else if entryAudio(entry)}
-										<EntryPlayer
-											src={entryAudio(entry)}
-											lyrics={[]}
-											emptyLabel={null}
-											downloadName={entry.name}
-										/>
+									{#if expandedEntries[entry.localId]}
+										{#if entry.status === 'done' && entryAudio(entry)}
+											<EntryPlayer
+												src={entryAudio(entry)}
+												lyrics={entry.lyrics}
+												framed={false}
+												downloadName={entry.name}
+												dragLine={(lineIndex) => journalLineRef(entry, lineIndex)}
+												onEditLine={(lineIndex, text) => editLine(entry, lineIndex, text)}
+												onMergeSelected={(indices) => mergeSelectedLines(entry, indices)}
+												onCarve={(lineIndex, from, to) => carveLine(entry, lineIndex, from, to)}
+											/>
+										{:else if entryAudio(entry)}
+											<EntryPlayer
+												src={entryAudio(entry)}
+												lyrics={[]}
+												emptyLabel={null}
+												framed={false}
+												downloadName={entry.name}
+											/>
+										{/if}
 									{/if}
 								</li>
 							{/each}

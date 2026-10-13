@@ -16,7 +16,8 @@
 		onEditLine,
 		onLocateLine,
 		onMergeSelected,
-		onCarve
+		onCarve,
+		framed = true
 	}: {
 		src: string;
 		lyrics: LyricLine[];
@@ -43,6 +44,8 @@
 		onMergeSelected?: (indices: number[]) => void;
 		/** Drag across words of a raw line to carve a bubble. */
 		onCarve?: (index: number, from: number, to: number) => void;
+		/** Draw the rounded border/background bubble. Off when the parent supplies it. */
+		framed?: boolean;
 	} = $props();
 
 	type Line = { text: string; start: number; end: number; words: string[]; raw: boolean };
@@ -218,14 +221,16 @@
 			/* synthetic or stale pointer id; carving still works without capture */
 		}
 		carving = { index, from: wordIndex, to: wordIndex };
-		// The line re-renders while dragging (the bubble grows), which can drop the
-		// captured element's pointerup, so commit from a window listener instead.
+		// The line re-renders while dragging (the bubble grows/wraps), which can
+		// drop the captured element, so track move/up from window listeners.
+		window.addEventListener('pointermove', wordPointerMove);
 		window.addEventListener('pointerup', wordPointerUp, { once: true });
 		window.addEventListener('pointercancel', cancelCarve, { once: true });
 	}
 
 	function cancelCarve() {
 		carving = null;
+		window.removeEventListener('pointermove', wordPointerMove);
 		window.removeEventListener('pointerup', wordPointerUp);
 	}
 
@@ -236,16 +241,27 @@
 		if (!span) return;
 		const lineIndex = Number(span.dataset.lineIndex);
 		if (lineIndex !== carving.index) return;
-		carving = { index: carving.index, from: carving.from, to: Number(span.dataset.wordIndex) };
+		const wordIndex = Number(span.dataset.wordIndex);
+		if (Number.isNaN(wordIndex) || wordIndex === carving.to) return;
+		carving = { index: carving.index, from: carving.from, to: wordIndex };
 	}
 
 	function wordPointerUp() {
 		const active = carving;
 		carving = null;
+		window.removeEventListener('pointermove', wordPointerMove);
 		window.removeEventListener('pointercancel', cancelCarve);
 		if (active && onCarve) {
 			onCarve(active.index, Math.min(active.from, active.to), Math.max(active.from, active.to));
 		}
+	}
+
+	/** Whether a word falls inside the in-progress carve selection. */
+	function isCarving(index: number, wordIndex: number): boolean {
+		if (!carving || carving.index !== index) return false;
+		const low = Math.min(carving.from, carving.to);
+		const high = Math.max(carving.from, carving.to);
+		return wordIndex >= low && wordIndex <= high;
 	}
 
 	function commitEdit(event: SubmitEvent) {
@@ -269,7 +285,7 @@
 	/** Selected = blue; the playing line = yellow; both = blue fill, yellow outline. */
 	function bubbleClass(index: number): string {
 		if (lines[index]?.raw) {
-			return 'w-full break-words select-none rounded-md px-1 py-1 text-left text-sm leading-snug text-neutral-700';
+			return 'w-full touch-none break-words select-none rounded-md px-1 py-1 text-left text-sm leading-snug text-neutral-700';
 		}
 		const isSelected = selected.includes(index);
 		const isActive = index === activeLine;
@@ -395,16 +411,19 @@
 	}
 </script>
 
-<div bind:this={rootEl} class="space-y-3 rounded-xl border border-neutral-200 bg-neutral-50 p-3">
-	{#snippet wordSpan(lineIndex: number, word: string, wordIndex: number)}
+<div
+	bind:this={rootEl}
+	class="space-y-3 {framed ? 'rounded-xl border border-neutral-200 bg-neutral-50 p-3' : ''}"
+>
+	{#snippet wordSpan(lineIndex: number, word: string, wordIndex: number, highlight: boolean)}
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<span
 			data-word-index={wordIndex}
 			data-line-index={lineIndex}
-			class="mr-1 inline-block rounded px-0.5"
-			onpointerdown={(event) => wordPointerDown(lineIndex, wordIndex, event)}
-			onpointermove={wordPointerMove}
-			onpointerup={wordPointerUp}>{word}</span
+			class="mr-1 inline-block rounded px-0.5 {highlight
+				? 'bg-amber-200 text-neutral-900 ring-1 ring-amber-400 ring-inset'
+				: ''}"
+			onpointerdown={(event) => wordPointerDown(lineIndex, wordIndex, event)}>{word}</span
 		>
 	{/snippet}
 
@@ -526,35 +545,12 @@
 							: undefined}
 						class={bubbleClass(index)}
 					>
-						{#if carving && carving.index === index}
-							{@const low = Math.min(carving.from, carving.to)}
-							{@const high = Math.max(carving.from, carving.to)}
-							{#each line.words.slice(0, low) as word, offset (offset)}{@render wordSpan(
-									index,
-									word,
-									offset
-								)}{/each}
-							<span
-								class="inline-block rounded-xl border border-amber-400 bg-amber-200 px-1 py-0.5 align-baseline shadow-sm"
-							>
-								{#each line.words.slice(low, high + 1) as word, offset (offset)}{@render wordSpan(
-										index,
-										word,
-										low + offset
-									)}{/each}
-							</span>
-							{#each line.words.slice(high + 1) as word, offset (offset)}{@render wordSpan(
-									index,
-									word,
-									high + 1 + offset
-								)}{/each}
-						{:else}
-							{#each line.words as word, wordIndex (wordIndex)}{@render wordSpan(
-									index,
-									word,
-									wordIndex
-								)}{/each}
-						{/if}
+						{#each line.words as word, wordIndex (wordIndex)}{@render wordSpan(
+								index,
+								word,
+								wordIndex,
+								isCarving(index, wordIndex)
+							)}{/each}
 					</button>
 					{#if onRemove}
 						<button
