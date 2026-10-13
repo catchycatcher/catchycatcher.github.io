@@ -95,7 +95,7 @@
 	let playable = $derived(Boolean(src));
 	let selectable = $derived(Boolean(dragLine || allowReorder));
 	let droppable = $derived(Boolean(onDropLines || onMoveLines));
-	let activeLine = $derived(playable ? findLine(lines, currentTime) : -1);
+	let activeLine = $derived(playable && playing ? findLine(lines, currentTime) : -1);
 	let activeWord = $derived(findWord(lines[activeLine]?.words ?? [], currentTime));
 
 	// A new line set (re-render, reorder, add) invalidates any selection.

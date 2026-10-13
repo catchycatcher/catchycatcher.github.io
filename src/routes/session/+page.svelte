@@ -414,7 +414,7 @@
 		}
 	}
 
-	async function saveScrapbook(body: { name?: string; bpm?: number; lines?: LineRef[] }) {
+	async function saveScrapbook(body: { name?: string; lines?: LineRef[] }) {
 		const url = api.url;
 		if (!url || !activeScrapbookId) return;
 		scrapbookBusy = true;
@@ -426,9 +426,7 @@
 			scrapbook = {
 				...scrapbook,
 				name: body.name ?? scrapbook.name,
-				bpm: body.bpm ?? scrapbook.bpm,
-				lines: body.lines ?? scrapbook.lines,
-				bpm_manual: body.bpm !== undefined ? true : scrapbook.bpm_manual
+				lines: body.lines ?? scrapbook.lines
 			};
 		}
 
@@ -556,7 +554,7 @@
 		return book.lines.map(
 			(ref) =>
 				rendered[sourceKey(ref)] ?? {
-					bpm: book.bpm,
+					bpm: 0,
 					'start time': 0,
 					'end time': 0,
 					words: [{ word: lineLabel(ref), start: 0, end: 0, length: 0 }]
@@ -699,23 +697,6 @@
 								aria-label="Scrapbook name"
 								class="min-w-0 flex-1 rounded-lg border border-neutral-300 bg-white px-3 py-1.5 text-sm"
 							/>
-							<label class="flex shrink-0 items-center gap-1 text-xs text-neutral-500">
-								BPM
-								<input
-									type="number"
-									min="20"
-									max="300"
-									value={scrapbook.bpm}
-									onchange={(event) =>
-										saveScrapbook({ bpm: Number((event.currentTarget as HTMLInputElement).value) })}
-									class="w-16 rounded-lg border border-neutral-300 bg-white px-2 py-1.5 text-sm"
-								/>
-								{#if !scrapbook.bpm_manual}
-									<span class="text-[10px] text-neutral-400" title="Median of the lines' BPMs"
-										>auto</span
-									>
-								{/if}
-							</label>
 							<button
 								onclick={removeScrapbook}
 								class="shrink-0 rounded-md px-2 py-1 text-xs text-neutral-500 hover:bg-red-50 hover:text-red-600"
