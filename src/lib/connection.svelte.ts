@@ -25,7 +25,13 @@ export type ConnectionStatus = 'idle' | 'checking' | 'online' | 'offline';
 export type SessionsStatus = 'idle' | 'loading' | 'ready' | 'error';
 
 /** One word in a lyric line, as the pipeline returns it. */
-export type LyricWord = { word: string; length: number };
+export type LyricWord = {
+	word: string;
+	length: number;
+	/** Exact word bounds in seconds (present on freshly processed results). */
+	start?: number;
+	end?: number;
+};
 
 /** One lyric line; keys mirror the spec schema (hence the spaced "start time"). */
 export type LyricLine = {
@@ -46,7 +52,10 @@ export type TakeResult = {
 export type TakeMeta = {
 	take_id: string;
 	index: number;
+	name?: string;
 	status: string;
+	processed?: boolean;
+	input_filename?: string;
 	error?: string | null;
 	filename?: string;
 	created_at?: string;
@@ -55,6 +64,15 @@ export type TakeMeta = {
 
 /** A session's name plus the takes stored inside it. */
 export type SessionDetail = { id: string; name: string; takes: TakeMeta[] };
+
+/** The outcome of storing/processing one upload. */
+export type TakeUpload = {
+	takeId: string;
+	/** The pipeline payload, when the upload was processed. */
+	result: TakeResult | null;
+	/** The stored metadata, when the upload was kept unprocessed. */
+	meta: TakeMeta | null;
+};
 
 export const connection = $state({
 	status: 'idle' as ConnectionStatus,
@@ -196,22 +214,93 @@ export async function getSession(url: string, sessionId: string): Promise<Sessio
 }
 
 /**
- * Upload one recording and wait for the processed result. This can take minutes
- * on the GPU, so the caller should show a spinner for the whole call.
+ * Upload one recording. By default the server processes it before answering
+ * (which can take minutes on the GPU); pass ``process: false`` to just store the
+ * audio and process it later with {@link processTake}.
  */
-export async function uploadTake(url: string, sessionId: string, file: File): Promise<TakeResult> {
-	const takeId = newTakeId();
+export async function uploadTake(
+	url: string,
+	sessionId: string,
+	file: File,
+	{
+		process = true,
+		index,
+		name,
+		takeId = newTakeId()
+	}: { process?: boolean; index?: number; name?: string; takeId?: string } = {}
+): Promise<TakeUpload> {
+	const query = [`process=${process ? 'true' : 'false'}`];
+	if (index !== undefined) query.push(`index=${index}`);
+	if (name) query.push(`name=${encodeURIComponent(name)}`);
+
 	const form = new FormData();
 	form.append('file', file);
 
 	const response = await fetch(
-		`${base(url)}/sessions/${encodeURIComponent(sessionId)}/takes/${encodeURIComponent(takeId)}`,
+		`${base(url)}/sessions/${encodeURIComponent(sessionId)}/takes/${encodeURIComponent(takeId)}?${query.join('&')}`,
 		{ method: 'POST', body: form, headers: { accept: 'application/json' } }
+	);
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when saving the recording.`);
+	}
+
+	const body: unknown = await response.json();
+	if (process) return { takeId, result: body as TakeResult, meta: null };
+	return { takeId, result: null, meta: body as TakeMeta };
+}
+
+/** Process a previously stored (unprocessed) take. */
+export async function processTake(
+	url: string,
+	sessionId: string,
+	takeId: string
+): Promise<TakeResult> {
+	const response = await fetch(
+		`${base(url)}/sessions/${encodeURIComponent(sessionId)}/takes/${encodeURIComponent(takeId)}/process`,
+		{ method: 'POST', headers: { accept: 'application/json' } }
 	);
 	if (!response.ok) {
 		throw new Error(`The server answered ${response.status} when processing the recording.`);
 	}
 	return (await response.json()) as TakeResult;
+}
+
+/** Delete a stored take (a journal entry) and its files. */
+export async function deleteTake(url: string, sessionId: string, takeId: string): Promise<void> {
+	const response = await fetch(
+		`${base(url)}/sessions/${encodeURIComponent(sessionId)}/takes/${encodeURIComponent(takeId)}`,
+		{ method: 'DELETE', headers: { accept: 'application/json' } }
+	);
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when deleting the entry.`);
+	}
+}
+
+/** Rename a journal entry. */
+export async function renameTake(
+	url: string,
+	sessionId: string,
+	takeId: string,
+	name: string
+): Promise<void> {
+	const response = await fetch(
+		`${base(url)}/sessions/${encodeURIComponent(sessionId)}/takes/${encodeURIComponent(takeId)}?name=${encodeURIComponent(name)}`,
+		{ method: 'PATCH', headers: { accept: 'application/json' } }
+	);
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when renaming the entry.`);
+	}
+}
+
+/** A playable url for a take's raw audio or a generated stem. */
+export function takeAudioUrl(
+	url: string,
+	sessionId: string,
+	takeId: string,
+	source: 'original' | 'vocals' | 'background' = 'original'
+): string {
+	const tail = source === 'original' ? 'original' : `audio/${source}`;
+	return `${base(url)}/sessions/${encodeURIComponent(sessionId)}/takes/${encodeURIComponent(takeId)}/${tail}`;
 }
 
 /** A finished take's result, or null when it has not produced one. */

@@ -124,11 +124,19 @@ function pick(words: string[]): string {
 }
 
 /**
+ * A friendly default name, e.g. `Lazy Horse`, built from an adjective and a
+ * noun. Shared by sessions and journal entries.
+ */
+export function newEntryName(): string {
+	return `${pick(ADJECTIVES)} ${pick(NOUNS)}`;
+}
+
+/**
  * A friendly default name for a new session, e.g. `Lazy Horse`. The date is not
  * part of the name; the UI shows the session's last-modified date separately.
  */
 export function newSessionName(): string {
-	return `${pick(ADJECTIVES)} ${pick(NOUNS)}`;
+	return newEntryName();
 }
 
 /**
