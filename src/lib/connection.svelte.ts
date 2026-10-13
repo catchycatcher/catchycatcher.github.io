@@ -590,8 +590,17 @@ export type ScrapbookRender = {
 	rendered_at?: string;
 };
 
-export type Scrapbook = ScrapbookSummary & {
+/** A named section: an ordered block of lines that plays together. */
+export type ScrapGroup = {
+	group: { id: string; type: string; name?: string };
 	lines: LineRef[];
+};
+
+/** A scrapbook entry: a bare line, or a section group holding its own lines. */
+export type ScrapEntry = LineRef | ScrapGroup;
+
+export type Scrapbook = ScrapbookSummary & {
+	lines: ScrapEntry[];
 	render: ScrapbookRender | null;
 };
 
@@ -631,7 +640,7 @@ export async function getScrapbook(
 export async function createScrapbook(
 	url: string,
 	sessionId: string,
-	body: { name: string; lines: LineRef[] }
+	body: { name: string; lines: ScrapEntry[] }
 ): Promise<ScrapbookSummary> {
 	const response = await fetch(scrapbookBase(url, sessionId), {
 		method: 'POST',
@@ -648,7 +657,7 @@ export async function updateScrapbook(
 	url: string,
 	sessionId: string,
 	scrapbookId: string,
-	body: { name?: string; lines?: LineRef[] }
+	body: { name?: string; lines?: ScrapEntry[] }
 ): Promise<Scrapbook> {
 	const response = await fetch(
 		`${scrapbookBase(url, sessionId)}/${encodeURIComponent(scrapbookId)}`,

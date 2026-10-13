@@ -30,6 +30,7 @@
 		uploadTake,
 		type LineRef,
 		type LyricLine,
+		type ScrapEntry,
 		type Scrapbook,
 		type ScrapbookSummary,
 		type TakeMeta
@@ -667,7 +668,7 @@
 		}
 	}
 
-	async function saveScrapbook(body: { name?: string; lines?: LineRef[] }) {
+	async function saveScrapbook(body: { name?: string; lines?: ScrapEntry[] }) {
 		const url = api.url;
 		if (!url || !activeScrapbookId) return;
 		scrapbookBusy = true;
@@ -765,18 +766,29 @@
 	}
 
 	function saveLines(lines: LineRef[], sourceGroupId?: string, sourceIndex?: number) {
-		void saveScrapbook({ lines: syncLinkedGroups(lines, sourceGroupId, sourceIndex) });
+		const synced = syncLinkedGroups(lines, sourceGroupId, sourceIndex);
+		void saveScrapbook({ lines: nestEntries(synced) });
+	}
+
+	/**
+	 * The section a drop at ``index`` joins: the line that would come *after* the
+	 * insertion. Keeps a line dropped on (or at the front of) a section inside it.
+	 */
+	function groupAt(lines: LineRef[], index: number): LineRef['group'] | undefined {
+		return lines[index]?.group;
 	}
 
 	function addLinesAt(refs: LineRef[], index?: number) {
-		const current = scrapbook ? [...scrapbook.lines] : [];
+		const current = scrapbook ? [...scrapbookFlat] : [];
 		const at = index ?? current.length;
-		current.splice(at, 0, ...refs);
-		saveLines(current, refs[0]?.group?.id, at);
+		const target = groupAt(current, at);
+		const incoming = refs.map((ref) => (target && !ref.group ? { ...ref, group: target } : ref));
+		current.splice(at, 0, ...incoming);
+		saveLines(current, incoming[0]?.group?.id, at);
 	}
 
 	function removeLineAt(index: number) {
-		const current = scrapbook ? [...scrapbook.lines] : [];
+		const current = scrapbook ? [...scrapbookFlat] : [];
 		const groupId = current[index]?.group?.id;
 		current.splice(index, 1);
 		const sourceIndex = Math.min(index, Math.max(0, current.length - 1));
@@ -785,7 +797,7 @@
 
 	/** Move the selected indices together so they land before ``to``. */
 	function moveLines(from: number[], to: number) {
-		const current = scrapbook ? [...scrapbook.lines] : [];
+		const current = scrapbook ? [...scrapbookFlat] : [];
 		const valid = from
 			.filter((index) => index >= 0 && index < current.length)
 			.sort((a, b) => a - b);
@@ -795,8 +807,31 @@
 		const removedBefore = valid.filter((index) => index < to).length;
 		const remaining = current.filter((_line, index) => !valid.includes(index));
 		const target = Math.max(0, Math.min(remaining.length, to - removedBefore));
-		remaining.splice(target, 0, ...moving);
-		saveLines(remaining, moving[0]?.group?.id, target);
+
+		// Which sections still have lines left where they were.
+		const stillPresent: Record<string, boolean> = {};
+		for (const line of remaining) {
+			if (line.group?.id) stillPresent[line.group.id] = true;
+		}
+
+		// Dropping into a section joins it. Otherwise a line pulled out of a section
+		// becomes a plain line, while a section moved whole keeps its identity.
+		const destination = groupAt(remaining, target);
+		const placed = moving.map((ref) => {
+			if (destination) return { ...ref, group: destination };
+			const id = ref.group?.id;
+			if (id && stillPresent[id]) {
+				return {
+					session_id: ref.session_id,
+					take_id: ref.take_id,
+					line_index: ref.line_index,
+					data: ref.data
+				};
+			}
+			return ref;
+		});
+		remaining.splice(target, 0, ...placed);
+		saveLines(remaining, destination?.id ?? placed[0]?.group?.id, target);
 	}
 
 	function onScrapbookDrop(event: DragEvent) {
@@ -838,7 +873,7 @@
 	 * entry, then scroll to and flash the line.
 	 */
 	async function locateScrapbookLine(index: number) {
-		const ref = scrapbook?.lines[index];
+		const ref = scrapbookFlat[index];
 		if (!ref) return;
 
 		if (ref.session_id === SCRIBBLES_SESSION_ID) {
@@ -911,11 +946,54 @@
 		if (next) applyLyrics(entry, next);
 	}
 
+	/** Flatten section groups into the flat list the editor works on. */
+	function flattenEntries(entries: ScrapEntry[]): LineRef[] {
+		const out: LineRef[] = [];
+		for (const entry of entries) {
+			if ('lines' in entry) {
+				for (const line of entry.lines) out.push({ ...line, group: entry.group });
+			} else {
+				out.push(entry);
+			}
+		}
+		return out;
+	}
+
+	/** Fold consecutive same-section lines back into group entries for storage. */
+	function nestEntries(flat: LineRef[]): ScrapEntry[] {
+		const out: ScrapEntry[] = [];
+		let index = 0;
+		while (index < flat.length) {
+			const group = flat[index].group;
+			if (!group) {
+				out.push(flat[index]);
+				index++;
+				continue;
+			}
+			const lines: LineRef[] = [];
+			while (index < flat.length && flat[index].group?.id === group.id) {
+				const ref = flat[index];
+				lines.push({
+					session_id: ref.session_id,
+					take_id: ref.take_id,
+					line_index: ref.line_index,
+					data: ref.data
+				});
+				index++;
+			}
+			out.push({ group: { ...group }, lines });
+		}
+		return out;
+	}
+
+	let scrapbookFlat = $derived(scrapbook ? flattenEntries(scrapbook.lines) : []);
+
 	/** True when the stored render's lines match the scrapbook's current lines. */
 	function renderMatchesLines(book: Scrapbook | null): boolean {
 		const timeline = book?.render?.timeline;
-		if (!book || !timeline?.length || timeline.length !== book.lines.length) return false;
-		return book.lines.every((ref, index) => {
+		const flat = book ? flattenEntries(book.lines) : [];
+		if (!book || !timeline?.length || timeline.length !== flat.length) return false;
+		return flat.every((ref, index) => {
 			const source = timeline[index].source;
 			return (
 				source &&
@@ -927,7 +1005,7 @@
 	}
 
 	let renderInSync = $derived(!renderPending && renderMatchesLines(scrapbook));
-	let scrapbookLoading = $derived(Boolean(scrapbook?.lines.length) && !renderInSync);
+	let scrapbookLoading = $derived(Boolean(scrapbookFlat.length) && !renderInSync);
 
 	function sourceKey(ref: { session_id: string; take_id: string; line_index: number }): string {
 		return `${ref.session_id}|${ref.take_id}|${ref.line_index}`;
@@ -946,7 +1024,7 @@
 		for (const line of book.render?.timeline ?? []) {
 			if (line.source) rendered[sourceKey(line.source)] = line;
 		}
-		return book.lines.map((ref) => {
+		return scrapbookFlat.map((ref) => {
 			const base = rendered[sourceKey(ref)];
 			const dataWords = ref.data?.words ?? [];
 			const label =
@@ -1005,7 +1083,7 @@
 		const low = Math.min(...indices);
 		const high = Math.max(...indices);
 		const id = `g-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-		let lines = scrapbook.lines.map((ref, index) =>
+		let lines = scrapbookFlat.map((ref, index) =>
 			index >= low && index <= high ? { ...ref, group: { id, type } } : ref
 		);
 		lines = renumberSections(lines, type);
@@ -1015,8 +1093,8 @@
 	/** Break a section group back into plain lines. */
 	function ungroupScrapbookLines(groupId: string) {
 		if (!scrapbook) return;
-		const type = scrapbook.lines.find((ref) => ref.group?.id === groupId)?.group?.type;
-		let lines = scrapbook.lines.map((ref) => {
+		const type = scrapbookFlat.find((ref) => ref.group?.id === groupId)?.group?.type;
+		let lines = scrapbookFlat.map((ref) => {
 			if (ref.group?.id !== groupId) return ref;
 			return {
 				session_id: ref.session_id,
@@ -1026,6 +1104,17 @@
 			};
 		});
 		if (type) lines = renumberSections(lines, type);
+		saveLines(lines);
+	}
+
+	/** Rename one section (every instance of it). */
+	function renameScrapbookGroup(groupId: string, name: string) {
+		if (!scrapbook) return;
+		const trimmed = name.trim();
+		if (!trimmed) return;
+		const lines = scrapbookFlat.map((ref) =>
+			ref.group?.id === groupId ? { ...ref, group: { ...ref.group, name: trimmed } } : ref
+		);
 		saveLines(lines);
 	}
 
@@ -1204,7 +1293,7 @@
 
 					{#if scrapbook}
 						<!-- Lines live in the player: drag to add/reorder, × to remove -->
-						{#if scrapbook.lines.length === 0}
+						{#if scrapbookFlat.length === 0}
 							<div
 								role="list"
 								aria-label="Scrapbook lines"
@@ -1235,7 +1324,8 @@
 								onLocateLine={locateScrapbookLine}
 								onGroupLines={groupScrapbookLines}
 								onUngroup={ungroupScrapbookLines}
-								lineRef={(index) => scrapbook?.lines[index] ?? null}
+								lineRef={(index) => scrapbookFlat[index] ?? null}
+								onRenameGroup={renameScrapbookGroup}
 							/>
 							{#if !scrapbook.render?.timeline?.length && !scrapbookBusy}
 								<button

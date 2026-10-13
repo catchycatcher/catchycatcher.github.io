@@ -19,6 +19,7 @@
 		onCarve,
 		onGroupLines,
 		onUngroup,
+		onRenameGroup,
 		lineRef,
 		framed = true
 	}: {
@@ -53,6 +54,8 @@
 		onGroupLines?: (indices: number[], type: string) => void;
 		/** Break a group apart again. */
 		onUngroup?: (groupId: string) => void;
+		/** Rename a section. */
+		onRenameGroup?: (groupId: string, name: string) => void;
 		/** Draw the rounded border/background bubble. Off when the parent supplies it. */
 		framed?: boolean;
 	} = $props();
@@ -70,9 +73,9 @@
 		| { kind: 'line'; index: number }
 		| { kind: 'group'; id: string; type: string; name: string; indices: number[] };
 
-	/** Colours for the section groups: chorus blue, verse rose, bridge green, other grey. */
+	/** Colours for the section groups: chorus orange, verse rose, bridge green, other grey. */
 	const SECTION_STYLES: Record<string, string> = {
-		chorus: 'border-blue-400 bg-blue-200 text-blue-900',
+		chorus: 'border-orange-400 bg-orange-200 text-orange-900',
 		verse: 'border-rose-400 bg-rose-200 text-rose-900',
 		bridge: 'border-green-400 bg-green-200 text-green-900',
 		other: 'border-neutral-300 bg-neutral-200 text-neutral-700'
@@ -220,16 +223,30 @@
 		return `w-fit max-w-full break-words select-none rounded-xl border px-2.5 py-1 text-left text-sm font-medium leading-snug ${sectionStyle(type)}`;
 	}
 
-	function onGroupClick(indices: number[], event: MouseEvent) {
-		if (!selectable) return;
-		if (event.ctrlKey || event.metaKey) return;
-		selected = [...indices];
-		anchor = indices[0];
-	}
-
 	function onGroupDoubleClick(id: string, event: MouseEvent) {
 		event.preventDefault();
 		expandedGroups[id] = !expandedGroups[id];
+	}
+
+	let renamingGroup = $state<string | null>(null);
+	let groupNameDraft = $state('');
+
+	function beginGroupRename(id: string, name: string) {
+		renamingGroup = id;
+		groupNameDraft = name;
+	}
+
+	function cancelGroupRename() {
+		renamingGroup = null;
+		groupNameDraft = '';
+	}
+
+	function commitGroupRename(event: SubmitEvent) {
+		event.preventDefault();
+		const id = renamingGroup;
+		const name = groupNameDraft.trim();
+		renamingGroup = null;
+		if (id && name && onRenameGroup) onRenameGroup(id, name);
 	}
 
 	// A new line set (re-render, reorder, add) invalidates selection/editing.
@@ -747,37 +764,69 @@
 			{:else}
 				<div role="listitem" class="flex flex-col gap-1">
 					<div data-row data-line-start={row.indices[0]} class="flex items-center gap-1">
-						<button
-							type="button"
-							draggable={Boolean(dragLine || allowReorder)}
-							ondragstart={(event) => dragGroupStart(event, row.indices)}
-							ondragend={clearDrop}
-							onclick={(event) => onGroupClick(row.indices, event)}
-							ondblclick={(event) => onGroupDoubleClick(row.id, event)}
-							title="Double-click to edit the lines inside"
-							class={groupBubbleClass(row.type)}
-						>
-							<span
-								class="mb-0.5 block text-[10px] font-semibold tracking-wide uppercase opacity-70"
-							>
-								{row.name}
-							</span>
-							{#if expandedGroups[row.id]}
-								<span class="block text-xs opacity-60">Double-click to close</span>
-							{:else}
-								{#each row.indices as lineIndex (lineIndex)}
-									<span class="block">{lineText(lineIndex)}</span>
-								{/each}
-							{/if}
-						</button>
-						{#if onUngroup}
+						{#if renamingGroup === row.id}
+							<form onsubmit={commitGroupRename} class="flex items-center gap-1">
+								<input
+									bind:value={groupNameDraft}
+									aria-label="Section name"
+									class="min-w-0 rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm focus:border-neutral-500 focus:outline-none"
+								/>
+								<button
+									type="submit"
+									class="shrink-0 rounded-md bg-neutral-900 px-2 py-1 text-xs font-medium text-white hover:bg-neutral-800"
+								>
+									Save
+								</button>
+								<button
+									type="button"
+									onclick={cancelGroupRename}
+									class="shrink-0 rounded-md px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-100"
+								>
+									Cancel
+								</button>
+							</form>
+						{:else}
 							<button
 								type="button"
-								onclick={() => onUngroup(row.id)}
-								class="shrink-0 rounded px-1.5 py-0.5 text-xs text-neutral-400 hover:bg-neutral-200 hover:text-neutral-700"
+								draggable={Boolean(dragLine || allowReorder)}
+								ondragstart={(event) => dragGroupStart(event, row.indices)}
+								ondragend={clearDrop}
+								ondblclick={(event) => onGroupDoubleClick(row.id, event)}
+								title="Double-click to show the lines inside"
+								class={groupBubbleClass(row.type)}
 							>
-								Ungroup
+								<span
+									class="mb-0.5 block text-[10px] font-semibold tracking-wide uppercase opacity-70"
+								>
+									{row.name}
+								</span>
+								{#if expandedGroups[row.id]}
+									<span class="block text-xs opacity-60">Double-click to close</span>
+								{:else}
+									{#each row.indices as lineIndex (lineIndex)}
+										<span class="block">{lineText(lineIndex)}</span>
+									{/each}
+								{/if}
 							</button>
+							{#if onRenameGroup}
+								<button
+									type="button"
+									onclick={() => beginGroupRename(row.id, row.name)}
+									title="Rename section"
+									class="shrink-0 rounded px-1.5 py-0.5 text-xs text-neutral-400 hover:bg-neutral-200 hover:text-neutral-700"
+								>
+									Rename
+								</button>
+							{/if}
+							{#if onUngroup}
+								<button
+									type="button"
+									onclick={() => onUngroup(row.id)}
+									class="shrink-0 rounded px-1.5 py-0.5 text-xs text-neutral-400 hover:bg-neutral-200 hover:text-neutral-700"
+								>
+									Ungroup
+								</button>
+							{/if}
 						{/if}
 					</div>
 					{#if expandedGroups[row.id]}
