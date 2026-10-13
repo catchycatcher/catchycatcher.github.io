@@ -541,7 +541,7 @@
 						onclick={(event) => onLineClick(index, event)}
 						ondblclick={(event) => onLineDoubleClick(index, event)}
 						title={onLocateLine
-							? 'Ctrl-click to find in journal · double-click to edit'
+							? 'Ctrl-click to reveal the recording this line came from'
 							: undefined}
 						class={bubbleClass(index)}
 					>

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { tick } from 'svelte';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { api } from '#lib/api.svelte.ts';
@@ -765,12 +766,34 @@
 		}
 	}
 
-	/** Ctrl-clicked a scrapbook line: scroll the journal to the same line. */
-	function locateScrapbookLine(index: number) {
+	/**
+	 * Ctrl-clicked a scrapbook line: reveal the recording it came from. Switch to
+	 * the tab that holds it (Bookmarked, Scribbles, or All entries), expand the
+	 * entry, then scroll to and flash the line.
+	 */
+	async function locateScrapbookLine(index: number) {
 		const ref = scrapbook?.lines[index];
 		if (!ref) return;
-		const entry = document.querySelector<HTMLElement>(`[data-take-id="${ref.take_id}"]`);
-		const bubble = entry?.querySelector<HTMLElement>(`[data-line-index="${ref.line_index}"]`);
+
+		if (ref.session_id === SCRIBBLES_SESSION_ID) {
+			// Scribbles always show their player, so there is nothing to expand.
+			tab = 'scribbles';
+		} else {
+			const entry = entries.find((candidate) => candidate.serverId === ref.take_id);
+			if (!entry) return; // the line came from another session; not shown here
+			tab = entry.bookmarked ? 'bookmarked' : 'all';
+			expandedEntries[entry.localId] = true;
+		}
+
+		// Let Svelte swap tabs/expand the entry before we look for the bubble.
+		await tick();
+		requestAnimationFrame(() => flashLine(ref.take_id, ref.line_index));
+	}
+
+	/** Scroll a rendered line into view and briefly ring it. */
+	function flashLine(takeId: string, lineIndex: number) {
+		const host = document.querySelector<HTMLElement>(`[data-take-id="${takeId}"]`);
+		const bubble = host?.querySelector<HTMLElement>(`[data-line-index="${lineIndex}"]`);
 		if (!bubble) return;
 		bubble.scrollIntoView({ behavior: 'smooth', block: 'center' });
 		bubble.classList.add('ring-2', 'ring-amber-500');
