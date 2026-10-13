@@ -41,6 +41,8 @@ export type LyricLine = {
 	words: LyricWord[];
 	/** Optional display-text override (the pipeline timings are unchanged). */
 	text?: string;
+	/** Mid-re-split line: shown as plain text (no bubble) until carved. */
+	raw?: boolean;
 	/** Scrapbook renders tag each line with the take it came from. */
 	source?: { session_id: string; take_id: string; line_index: number };
 };
@@ -321,7 +323,7 @@ export async function updateLyrics(
 	url: string,
 	sessionId: string,
 	takeId: string,
-	lines: { words: LyricWord[] }[]
+	lines: { words: LyricWord[]; raw?: boolean }[]
 ): Promise<LyricLine[]> {
 	const response = await fetch(
 		`${base(url)}/sessions/${encodeURIComponent(sessionId)}/takes/${encodeURIComponent(takeId)}/lyrics`,

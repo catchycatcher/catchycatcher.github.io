@@ -70,8 +70,6 @@
 	let dragOverScrapbook = $state(false);
 	/** True while an edited scrapbook's mix is (re)rendering. */
 	let renderPending = $state(false);
-	/** The journal entry currently in re-split (carve) mode, if any. */
-	let carveEntry = $state<string | null>(null);
 
 	const recorder = new Recorder();
 	let segmentStartedAt = $state(0);
@@ -544,7 +542,7 @@
 	}
 
 	/** Send a take's new line segmentation to the server (it recomputes BPM). */
-	async function applyLyrics(entry: Entry, lines: { words: LyricWord[] }[]) {
+	async function applyLyrics(entry: Entry, lines: { words: LyricWord[]; raw?: boolean }[]) {
 		const url = api.url;
 		if (!url || !entry.serverId) return;
 		try {
@@ -555,38 +553,40 @@
 		}
 	}
 
-	/** Ctrl-clicked a journal line: merge it with its neighbour, then allow carving. */
-	function mergeLineWithNext(entry: Entry, index: number) {
-		carveEntry = entry.localId;
-		const lines = entry.lyrics;
-		if (lines.length < 2) return;
-		const target = index + 1 < lines.length ? index + 1 : index - 1;
-		const low = Math.min(index, target);
-		const high = Math.max(index, target);
-		const merged = { words: [...lines[low].words, ...lines[high].words] };
-		const next = [...lines.slice(0, low), merged, ...lines.slice(high + 1)];
-		carveEntry = entry.localId;
-		void applyLyrics(
-			entry,
-			next.map((line) => ({ words: line.words }))
-		);
+	function payload(lines: LyricLine[]) {
+		return lines.map((line) => ({ words: line.words, raw: line.raw }));
 	}
 
-	/** Dragged across words in carve mode: those words become their own line(s). */
+	/** Ctrl-clicked: merge the selected lines into one raw (bubble-less) line. */
+	function mergeSelectedLines(entry: Entry, indices: number[]) {
+		const lines = entry.lyrics;
+		if (indices.length < 2) return;
+		const low = Math.max(0, indices[0]);
+		const high = Math.min(lines.length - 1, indices[indices.length - 1]);
+		const mergedWords: LyricWord[] = [];
+		for (let index = low; index <= high; index++) mergedWords.push(...lines[index].words);
+		const next = [
+			...lines.slice(0, low),
+			{ words: mergedWords, raw: true } as LyricLine,
+			...lines.slice(high + 1)
+		];
+		void applyLyrics(entry, payload(next));
+	}
+
+	/** Dragged across words of a raw line: those words become a bubble, the rest
+	 *  stays raw so you can keep carving. */
 	function carveLine(entry: Entry, index: number, from: number, to: number) {
 		const line = entry.lyrics[index];
 		if (!line) return;
 		const words = line.words;
-		if (from === 0 && to === words.length - 1) return;
-		const parts: { words: LyricWord[] }[] = [];
-		if (from > 0) parts.push({ words: words.slice(0, from) });
-		parts.push({ words: words.slice(from, to + 1) });
-		if (to + 1 < words.length) parts.push({ words: words.slice(to + 1) });
+		if (from === 0 && to === words.length - 1 && !line.raw) return;
+		const raw = Boolean(line.raw);
+		const parts: LyricLine[] = [];
+		if (from > 0) parts.push({ words: words.slice(0, from), raw } as LyricLine);
+		parts.push({ words: words.slice(from, to + 1) } as LyricLine);
+		if (to + 1 < words.length) parts.push({ words: words.slice(to + 1), raw } as LyricLine);
 		const next = [...entry.lyrics.slice(0, index), ...parts, ...entry.lyrics.slice(index + 1)];
-		void applyLyrics(
-			entry,
-			next.map((piece) => ({ words: piece.words }))
-		);
+		void applyLyrics(entry, payload(next));
 	}
 
 	/** True when the stored render's lines match the scrapbook's current lines. */
@@ -969,9 +969,8 @@
 											downloadName={entry.name}
 											dragLine={(lineIndex) => journalLineRef(entry, lineIndex)}
 											onEditLine={(lineIndex, text) => editLine(entry, lineIndex, text)}
-											onCtrlClick={(lineIndex) => mergeLineWithNext(entry, lineIndex)}
+											onMergeSelected={(indices) => mergeSelectedLines(entry, indices)}
 											onCarve={(lineIndex, from, to) => carveLine(entry, lineIndex, from, to)}
-											carveEnabled={carveEntry === entry.localId}
 										/>
 									{:else if entryAudio(entry)}
 										<EntryPlayer

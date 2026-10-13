@@ -15,9 +15,8 @@
 		onRemove,
 		onEditLine,
 		onLocateLine,
-		onCtrlClick,
-		onCarve,
-		carveEnabled = false
+		onMergeSelected,
+		onCarve
 	}: {
 		src: string;
 		lyrics: LyricLine[];
@@ -40,14 +39,13 @@
 		onEditLine?: (index: number, text: string) => void;
 		/** Ctrl/cmd-clicking a line jumps to it in the journal. */
 		onLocateLine?: (index: number) => void;
-		/** Ctrl/cmd-clicking a line merges it with its neighbour (journal). */
-		onCtrlClick?: (index: number) => void;
-		/** Drag across words to carve a line into bubbles (only when enabled). */
+		/** Ctrl/cmd-clicking merges the selected lines into one raw text line. */
+		onMergeSelected?: (indices: number[]) => void;
+		/** Drag across words of a raw line to carve a bubble. */
 		onCarve?: (index: number, from: number, to: number) => void;
-		carveEnabled?: boolean;
 	} = $props();
 
-	type Line = { text: string; start: number; end: number; words: string[] };
+	type Line = { text: string; start: number; end: number; words: string[]; raw: boolean };
 
 	let audio = $state<HTMLAudioElement | null>(null);
 	let rootEl = $state<HTMLDivElement | null>(null);
@@ -66,8 +64,10 @@
 	/** Index of the line being text-edited, if any. */
 	let editing = $state<number | null>(null);
 	let editDraft = $state('');
-	/** Word range being dragged out for carving (only when ``carveEnabled``). */
+	/** Word range being dragged out for carving (only on a raw line). */
 	let carving = $state<{ index: number; from: number; to: number } | null>(null);
+	/** A bubble that follows the pointer while carving. */
+	let ghost = $state<{ x: number; y: number; words: string[] } | null>(null);
 
 	/** Each line's display text (edited override, else its words joined). */
 	function resolve(rawLines: LyricLine[]): Line[] {
@@ -83,7 +83,13 @@
 								.map((word) => word.word)
 								.join(' ')
 								.trim();
-				return { text, start, end, words: rawWords.map((word) => word.word) };
+				return {
+					text,
+					start,
+					end,
+					words: rawWords.map((word) => word.word),
+					raw: Boolean(line.raw)
+				};
 			})
 			.filter((line) => line.text.length > 0);
 	}
@@ -179,9 +185,10 @@
 			onLocateLine(index);
 			return;
 		}
-		if ((event.ctrlKey || event.metaKey) && onCtrlClick) {
+		if ((event.ctrlKey || event.metaKey) && onMergeSelected) {
 			event.preventDefault();
-			onCtrlClick(index);
+			const indices = selected.includes(index) ? [...selected] : [...selected, index];
+			onMergeSelected([...indices].sort((a, b) => a - b));
 			return;
 		}
 		if (!selectable) return;
@@ -205,7 +212,7 @@
 	}
 
 	function wordPointerDown(index: number, wordIndex: number, event: PointerEvent) {
-		if (!onCarve || !carveEnabled) return;
+		if (!onCarve || !lines[index]?.raw) return;
 		event.preventDefault();
 		try {
 			(event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
@@ -213,17 +220,22 @@
 			/* synthetic or stale pointer id; carving still works without capture */
 		}
 		carving = { index, from: wordIndex, to: wordIndex };
+		ghost = { x: event.clientX, y: event.clientY, words: [lines[index].words[wordIndex]] };
 	}
 
-	function wordPointerMove(index: number, wordIndex: number) {
+	function wordPointerMove(index: number, wordIndex: number, event: PointerEvent) {
 		if (!carving || carving.index !== index) return;
 		carving = { index, from: carving.from, to: wordIndex };
+		const low = Math.min(carving.from, carving.to);
+		const high = Math.max(carving.from, carving.to);
+		ghost = { x: event.clientX, y: event.clientY, words: lines[index].words.slice(low, high + 1) };
 	}
 
 	function wordPointerUp() {
 		const active = carving;
 		carving = null;
-		if (active && onCarve && carveEnabled) {
+		ghost = null;
+		if (active && onCarve) {
 			onCarve(active.index, Math.min(active.from, active.to), Math.max(active.from, active.to));
 		}
 	}
@@ -246,13 +258,17 @@
 		return [...indices].sort((a, b) => a - b);
 	}
 
-	/** Selected = blue; the playing line = yellow; both = blue with a yellow ring. */
+	/** Selected = blue; the playing line = yellow; both = blue fill, yellow outline. */
 	function bubbleClass(index: number): string {
+		if (lines[index]?.raw) {
+			return 'w-full select-none rounded-md px-1 py-1 text-left text-sm leading-snug text-neutral-700';
+		}
 		const isSelected = selected.includes(index);
 		const isActive = index === activeLine;
 		let state = 'border-neutral-200 bg-white/60 hover:bg-white';
 		if (isSelected && isActive) {
-			state = 'border-blue-400 bg-blue-200 ring-2 ring-amber-400';
+			// Yellow outline replaces the blue one (no double outline).
+			state = 'border-amber-400 bg-blue-200';
 		} else if (isSelected) {
 			state = 'border-blue-400 bg-blue-200';
 		} else if (isActive) {
@@ -477,7 +493,7 @@
 						data-active={index === activeLine}
 						data-line
 						data-line-index={index}
-						draggable={Boolean(dragLine || allowReorder)}
+						draggable={Boolean(dragLine || allowReorder) && !lines[index].raw}
 						ondragstart={(event) => dragStart(event, index)}
 						ondragend={clearDrop}
 						onmousedown={(event) => {
@@ -500,7 +516,7 @@
 									? 'bg-amber-500 text-white'
 									: ''}"
 								onpointerdown={(event) => wordPointerDown(index, wordIndex, event)}
-								onpointermove={() => wordPointerMove(index, wordIndex)}
+								onpointermove={(event) => wordPointerMove(index, wordIndex, event)}
 								onpointerup={wordPointerUp}
 							>
 								{word}
@@ -541,4 +557,14 @@
 		onloadedmetadata={() => (duration = audio?.duration ?? 0)}
 		ondurationchange={() => (duration = audio?.duration ?? 0)}
 	></audio>
+
+	{#if ghost}
+		<div
+			class="pointer-events-none fixed z-50 rounded-xl border border-amber-400 bg-amber-200 px-2.5 py-1 text-sm text-neutral-900 shadow-lg"
+			style="left:{ghost.x + 8}px; top:{ghost.y + 8}px"
+			aria-hidden="true"
+		>
+			{ghost.words.join(' ')}
+		</div>
+	{/if}
 </div>
