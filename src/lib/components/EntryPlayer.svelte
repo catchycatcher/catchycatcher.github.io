@@ -223,12 +223,22 @@
 		ghost = { x: event.clientX, y: event.clientY, words: [lines[index].words[wordIndex]] };
 	}
 
-	function wordPointerMove(index: number, wordIndex: number, event: PointerEvent) {
-		if (!carving || carving.index !== index) return;
-		carving = { index, from: carving.from, to: wordIndex };
+	function wordPointerMove(event: PointerEvent) {
+		if (!carving) return;
+		const element = document.elementFromPoint(event.clientX, event.clientY);
+		const span = element?.closest<HTMLElement>('[data-word-index]');
+		if (!span) return;
+		const lineIndex = Number(span.dataset.lineIndex);
+		if (lineIndex !== carving.index) return;
+		const wordIndex = Number(span.dataset.wordIndex);
+		carving = { index: carving.index, from: carving.from, to: wordIndex };
 		const low = Math.min(carving.from, carving.to);
 		const high = Math.max(carving.from, carving.to);
-		ghost = { x: event.clientX, y: event.clientY, words: lines[index].words.slice(low, high + 1) };
+		ghost = {
+			x: event.clientX,
+			y: event.clientY,
+			words: lines[carving.index].words.slice(low, high + 1)
+		};
 	}
 
 	function wordPointerUp() {
@@ -509,6 +519,8 @@
 						{#each line.words as word, wordIndex (wordIndex)}
 							<!-- svelte-ignore a11y_no_static_element_interactions -->
 							<span
+								data-word-index={wordIndex}
+								data-line-index={index}
 								class="rounded px-0.5 {carving &&
 								carving.index === index &&
 								wordIndex >= Math.min(carving.from, carving.to) &&
@@ -516,7 +528,7 @@
 									? 'bg-amber-500 text-white'
 									: ''}"
 								onpointerdown={(event) => wordPointerDown(index, wordIndex, event)}
-								onpointermove={(event) => wordPointerMove(index, wordIndex, event)}
+								onpointermove={wordPointerMove}
 								onpointerup={wordPointerUp}
 							>
 								{word}
