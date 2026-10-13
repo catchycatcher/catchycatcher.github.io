@@ -250,7 +250,7 @@
 		return `w-fit max-w-full rounded-xl border px-2 py-1.5 ${sectionStyle(type)}`;
 	}
 
-	function onGroupDoubleClick(id: string, event: MouseEvent) {
+	function toggleGroupOpen(id: string, event: MouseEvent) {
 		event.preventDefault();
 		expandedGroups[id] = !expandedGroups[id];
 	}
@@ -834,13 +834,14 @@
 							</form>
 						{:else}
 							<!-- svelte-ignore a11y_no_static_element_interactions -->
+							<!-- svelte-ignore a11y_click_events_have_key_events -->
 							<div
 								draggable={Boolean(dragLine || allowReorder)}
 								ondragstart={(event) => dragGroupStart(event, row.indices)}
 								ondragend={clearDrop}
-								ondblclick={(event) => onGroupDoubleClick(row.instance, event)}
-								title="Double-click to show the lines inside"
-								class="flex min-w-0 cursor-grab items-center gap-1"
+								onclick={(event) => toggleGroupOpen(row.instance, event)}
+								title="Click to show or hide the lines inside"
+								class="flex min-w-0 cursor-pointer items-center gap-1"
 							>
 								<span class="text-[11px] font-semibold tracking-wide uppercase">
 									{row.name}
@@ -866,16 +867,36 @@
 							{#if onUngroup}
 								<button
 									type="button"
-									onclick={() => onUngroup(row.id)}
-									class="ml-auto shrink-0 rounded px-1.5 py-0.5 text-xs text-neutral-500 hover:bg-black/10"
+									onclick={(event) => {
+										event.stopPropagation();
+										onUngroup(row.id);
+									}}
+									title="Ungroup section"
+									aria-label="Ungroup section"
+									class="ml-auto shrink-0 rounded p-1 text-neutral-500 hover:bg-black/10"
 								>
-									Ungroup
+									<svg
+										viewBox="0 0 24 24"
+										class="size-3.5"
+										fill="none"
+										stroke="currentColor"
+										stroke-width="2"
+										stroke-linecap="round"
+										stroke-linejoin="round"
+										aria-hidden="true"
+									>
+										<rect x="3" y="5" width="7" height="14" rx="1.5" />
+										<rect x="14" y="5" width="7" height="14" rx="1.5" />
+									</svg>
 								</button>
 							{/if}
 							{#if onRemoveGroup}
 								<button
 									type="button"
-									onclick={() => onRemoveGroup(row.indices)}
+									onclick={(event) => {
+										event.stopPropagation();
+										onRemoveGroup(row.indices);
+									}}
 									title="Delete the whole section"
 									class="shrink-0 rounded px-1.5 py-0.5 text-xs text-neutral-500 hover:bg-red-500/15 hover:text-red-700"
 								>

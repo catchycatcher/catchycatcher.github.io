@@ -796,13 +796,39 @@
 	}
 
 	/**
+	 * Snap an insertion index out of a section's run, so dropping one whole
+	 * section on top of another lands beside it instead of splitting it in two.
+	 */
+	function snapOutsideRun(
+		lines: LineRef[],
+		index: number,
+		group: LineRef['group'] | null | undefined
+	): number {
+		if (!group) return index;
+		const key = group.instance ?? group.id;
+		const keyOf = (ref: LineRef): string | undefined => ref.group?.instance ?? ref.group?.id;
+		let start = index;
+		while (start > 0 && keyOf(lines[start - 1]) === key) start--;
+		let end = index;
+		while (end < lines.length && keyOf(lines[end]) === key) end++;
+		if (end <= start) return index;
+		return index - start <= end - index ? start : end;
+	}
+
+	/**
 	 * The section a drop joins, if any. Drops that should not join a section pass
 	 * ``null`` (the EntryPlayer decides from where the pointer landed).
 	 */
 	function addLinesAt(refs: LineRef[], index?: number, group?: LineRef['group'] | null) {
 		const current = scrapbook ? [...scrapbookFlat] : [];
-		const at = index ?? current.length;
-		const target = group ?? undefined;
+		let at = index ?? current.length;
+		let target = group ?? undefined;
+		const refsHaveSection = refs.some((ref) => ref.group);
+		// A section dropped on another lands beside it, never splitting it.
+		if (target && refsHaveSection) {
+			at = snapOutsideRun(current, at, target);
+			target = undefined;
+		}
 		// A dragged section keeps its shared id but becomes its own instance.
 		const instances: Record<string, string> = {};
 		const incoming = refs.map((ref) => {
@@ -873,12 +899,17 @@
 		const moving = valid.map((index) => current[index]);
 		const removedBefore = valid.filter((index) => index < to).length;
 		const remaining = current.filter((_line, index) => !valid.includes(index));
-		const target = Math.max(0, Math.min(remaining.length, to - removedBefore));
+		let target = Math.max(0, Math.min(remaining.length, to - removedBefore));
 
-		// Dropping into a section joins it. A line pulled out of a section becomes a
-		// plain line, while a section moved whole (or a whole linked instance) keeps
-		// its identity.
-		const destination = group ?? undefined;
+		// Dropping into a section joins it. A section dropped on another lands
+		// beside it; a line pulled out of a section becomes a plain line, while a
+		// section moved whole (or a whole linked instance) keeps its identity.
+		const movingHasSection = moving.some((ref) => ref.group);
+		let destination = group ?? undefined;
+		if (destination && movingHasSection) {
+			target = snapOutsideRun(remaining, target, destination);
+			destination = undefined;
+		}
 		const placed = moving.map((ref) => {
 			if (destination) return { ...ref, group: destination };
 			const id = ref.group?.id;
@@ -1011,9 +1042,13 @@
 	/** Flatten section groups into the flat list the editor works on. */
 	function flattenEntries(entries: ScrapEntry[]): LineRef[] {
 		const out: LineRef[] = [];
+		const seen: Record<string, boolean> = {};
 		entries.forEach((entry, entryIndex) => {
 			if ('lines' in entry) {
-				const group = { ...entry.group, instance: entry.group.instance ?? `e${entryIndex}` };
+				let instance = entry.group.instance;
+				if (!instance || seen[instance]) instance = `e${entryIndex}-${instance ?? ''}`;
+				seen[instance] = true;
+				const group = { ...entry.group, instance };
 				for (const line of entry.lines) out.push({ ...line, group });
 			} else {
 				out.push(entry);
