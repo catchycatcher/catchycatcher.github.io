@@ -730,11 +730,7 @@
 		}
 	}
 
-	async function saveScrapbook(body: {
-		name?: string;
-		lines?: ScrapEntry[];
-		target_bpm?: number | null;
-	}) {
+	async function saveScrapbook(body: { name?: string; lines?: ScrapEntry[] }) {
 		const url = api.url;
 		if (!url || !activeScrapbookId) return;
 		scrapbookBusy = true;
@@ -746,8 +742,7 @@
 			scrapbook = {
 				...scrapbook,
 				name: body.name ?? scrapbook.name,
-				lines: body.lines ?? scrapbook.lines,
-				target_bpm: body.target_bpm !== undefined ? body.target_bpm : scrapbook.target_bpm
+				lines: body.lines ?? scrapbook.lines
 			};
 		}
 
@@ -1530,26 +1525,6 @@
 
 					{#if scrapbookError}
 						<p class="text-xs text-red-600">{scrapbookError}</p>
-					{/if}
-
-					{#if scrapbook}
-						<div class="flex items-center gap-2 text-xs text-neutral-500">
-							<label for="target-bpm">Target tempo</label>
-							<input
-								id="target-bpm"
-								type="number"
-								min="20"
-								max="300"
-								placeholder="auto"
-								value={scrapbook.target_bpm ?? ''}
-								onchange={(event) => {
-									const value = Number((event.currentTarget as HTMLInputElement).value);
-									saveScrapbook({ target_bpm: value > 0 ? value : null });
-								}}
-								class="w-16 rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm text-neutral-800"
-							/>
-							<span>BPM · blank = auto</span>
-						</div>
 					{/if}
 
 					{#if scrapbook}
