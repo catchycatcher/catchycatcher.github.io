@@ -796,17 +796,13 @@
 	}
 
 	/**
-	 * The section a drop at ``index`` joins: the line that would come *after* the
-	 * insertion. Keeps a line dropped on (or at the front of) a section inside it.
+	 * The section a drop joins, if any. Drops that should not join a section pass
+	 * ``null`` (the EntryPlayer decides from where the pointer landed).
 	 */
-	function groupAt(lines: LineRef[], index: number): LineRef['group'] | undefined {
-		return lines[index]?.group;
-	}
-
-	function addLinesAt(refs: LineRef[], index?: number, outside = false) {
+	function addLinesAt(refs: LineRef[], index?: number, group?: LineRef['group'] | null) {
 		const current = scrapbook ? [...scrapbookFlat] : [];
 		const at = index ?? current.length;
-		const target = outside ? undefined : groupAt(current, at);
+		const target = group ?? undefined;
 		// A dragged section keeps its shared id but becomes its own instance.
 		const instances: Record<string, string> = {};
 		const incoming = refs.map((ref) => {
@@ -867,7 +863,7 @@
 	}
 
 	/** Move the selected indices together so they land before ``to``. */
-	function moveLines(from: number[], to: number, outside = false) {
+	function moveLines(from: number[], to: number, group?: LineRef['group'] | null) {
 		const current = scrapbook ? [...scrapbookFlat] : [];
 		const valid = from
 			.filter((index) => index >= 0 && index < current.length)
@@ -882,7 +878,7 @@
 		// Dropping into a section joins it. A line pulled out of a section becomes a
 		// plain line, while a section moved whole (or a whole linked instance) keeps
 		// its identity.
-		const destination = outside ? undefined : groupAt(remaining, target);
+		const destination = group ?? undefined;
 		const placed = moving.map((ref) => {
 			if (destination) return { ...ref, group: destination };
 			const id = ref.group?.id;
@@ -1393,8 +1389,7 @@
 								loading={scrapbookLoading}
 								downloadName={scrapbook.name}
 								allowReorder
-								onDropLines={(refs, index, outside) =>
-									addLinesAt(refs as LineRef[], index, outside)}
+								onDropLines={(refs, index, group) => addLinesAt(refs as LineRef[], index, group)}
 								onMoveLines={moveLines}
 								onRemove={removeLineAt}
 								onRemoveGroup={removeGroupAt}

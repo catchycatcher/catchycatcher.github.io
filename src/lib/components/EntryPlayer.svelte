@@ -38,10 +38,10 @@
 		lineRef?: (lineIndex: number) => unknown | null;
 		/** Allow dragging the selection to reorder within this player. */
 		allowReorder?: boolean;
-		/** A selection of lines dropped in at ``index`` (``outside`` = before a section). */
-		onDropLines?: (refs: unknown[], index: number, outside?: boolean) => void;
+		/** A selection of lines dropped in at ``index`` (``group`` = section to join). */
+		onDropLines?: (refs: unknown[], index: number, group?: Group | null) => void;
 		/** Move the selected line indices to sit before ``index``. */
-		onMoveLines?: (from: number[], to: number, outside?: boolean) => void;
+		onMoveLines?: (from: number[], to: number, group?: Group | null) => void;
 		onRemove?: (index: number) => void;
 		/** Delete a whole section (all of the given line indices). */
 		onRemoveGroup?: (indices: number[]) => void;
@@ -116,8 +116,8 @@
 	let anchor = $state<number | null>(null);
 	/** Insertion point for a drag, drawn as a line between bubbles. */
 	let dropIndex = $state<number | null>(null);
-	/** True when the drop is landing *before* a section (leaves it, not joins it). */
-	let dropOutside = $state(false);
+	/** The section a drop would join (null = outside every section). */
+	let dropGroup = $state<Group | null>(null);
 	/** Absolute top (px) for the insertion line, so it never shifts the rows. */
 	let dropTop = $state<number | null>(null);
 	/** Index of the line being text-edited, if any. */
@@ -506,29 +506,31 @@
 	}
 
 	/**
-	 * Where a drop at ``clientY`` lands. Landing in the top half of a section
-	 * header means "before the section" (outside); anywhere else maps to the line
-	 * that would follow the drop.
+	 * Where a drop at ``clientY`` lands, and which section (if any) it joins.
+	 *
+	 * The top half of a section header means "before the section" (outside); its
+	 * bottom half joins at the start. A little footer row under the lines joins at
+	 * the end; below that the line lands after the section.
 	 */
-	function insertionIndex(clientY: number): { index: number; outside: boolean; top: number } {
-		if (!listEl) return { index: lines.length, outside: false, top: 0 };
+	function insertionIndex(clientY: number): { index: number; group: Group | null; top: number } {
+		if (!listEl) return { index: lines.length, group: null, top: 0 };
 		const rowEls = [...listEl.querySelectorAll<HTMLElement>('[data-row][data-line-start]')];
 		for (const element of rowEls) {
 			const rect = element.getBoundingClientRect();
 			if (clientY < rect.top + rect.height / 2) {
-				// Top half of a section header drops before it (outside); anywhere
-				// else maps onto the line that would follow the drop.
-				return {
-					index: rowStart(element),
-					outside: element.dataset.groupRow === 'true',
-					top: Math.max(0, element.offsetTop - 2)
-				};
+				const index = rowStart(element);
+				const top = Math.max(0, element.offsetTop - 2);
+				if (element.dataset.groupRow === 'true') return { index, group: null, top };
+				if (element.dataset.groupEnd === 'true') {
+					return { index, group: lines[index - 1]?.group ?? null, top };
+				}
+				return { index, group: lines[index]?.group ?? null, top };
 			}
 		}
 		const last = rowEls[rowEls.length - 1];
 		return {
 			index: lines.length,
-			outside: false,
+			group: null,
 			top: last ? last.offsetTop + last.offsetHeight + 2 : 0
 		};
 	}
@@ -538,7 +540,7 @@
 		event.preventDefault();
 		const hit = insertionIndex(event.clientY);
 		dropIndex = hit.index;
-		dropOutside = hit.outside;
+		dropGroup = hit.group;
 		dropTop = hit.top;
 	}
 
@@ -550,7 +552,7 @@
 
 	function clearDrop() {
 		dropIndex = null;
-		dropOutside = false;
+		dropGroup = null;
 		dropTop = null;
 	}
 
@@ -558,14 +560,14 @@
 		if (!droppable) return;
 		event.preventDefault();
 		const index = dropIndex ?? lines.length;
-		const outside = dropOutside;
+		const group = dropGroup;
 		clearDrop();
 
 		const external = event.dataTransfer?.getData('application/x-catchy-lines');
 		if (external && onDropLines) {
 			try {
 				const refs: unknown = JSON.parse(external);
-				if (Array.isArray(refs)) onDropLines(refs, index, outside);
+				if (Array.isArray(refs)) onDropLines(refs, index, group);
 			} catch {
 				/* ignore malformed drag data */
 			}
@@ -576,7 +578,7 @@
 		if (internal && onMoveLines) {
 			try {
 				const from: unknown = JSON.parse(internal);
-				if (Array.isArray(from)) onMoveLines(from as number[], index, outside);
+				if (Array.isArray(from)) onMoveLines(from as number[], index, group);
 			} catch {
 				/* ignore malformed drag data */
 			}
@@ -893,6 +895,14 @@
 							{/each}
 						</div>
 					{/if}
+					<!-- Drop zone: land here to add at the end of the section; below it = after. -->
+					<div
+						data-row
+						data-group-end="true"
+						data-line-start={row.indices[0] + row.indices.length}
+						class="h-2"
+						aria-hidden="true"
+					></div>
 				</div>
 			{/if}
 		{/each}
