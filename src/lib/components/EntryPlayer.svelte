@@ -269,7 +269,7 @@
 	/** Selected = blue; the playing line = yellow; both = blue fill, yellow outline. */
 	function bubbleClass(index: number): string {
 		if (lines[index]?.raw) {
-			return 'w-full select-none rounded-md px-1 py-1 text-left text-sm leading-snug text-neutral-700';
+			return 'w-full break-words select-none rounded-md px-1 py-1 text-left text-sm leading-snug text-neutral-700';
 		}
 		const isSelected = selected.includes(index);
 		const isActive = index === activeLine;
@@ -282,7 +282,7 @@
 		} else if (isActive) {
 			state = 'border-amber-300 bg-amber-200 text-neutral-900';
 		}
-		return `w-fit max-w-full select-none rounded-xl border px-2.5 py-1 text-left text-sm leading-snug transition-colors ${state}`;
+		return `w-fit max-w-full break-words select-none rounded-xl border px-2.5 py-1 text-left text-sm leading-snug transition-colors ${state}`;
 	}
 
 	function dragStart(event: DragEvent, index: number) {
@@ -401,7 +401,7 @@
 		<span
 			data-word-index={wordIndex}
 			data-line-index={lineIndex}
-			class="mr-1 rounded px-0.5"
+			class="mr-1 inline-block rounded px-0.5"
 			onpointerdown={(event) => wordPointerDown(lineIndex, wordIndex, event)}
 			onpointermove={wordPointerMove}
 			onpointerup={wordPointerUp}>{word}</span
@@ -485,7 +485,7 @@
 			<p class="px-1 py-2 text-sm text-neutral-400">{emptyLabel}</p>
 		{/if}
 		{#each lines as line, index (index)}
-			<div role="listitem" data-row class="flex items-center gap-1 self-start">
+			<div role="listitem" data-row class="flex items-center gap-1">
 				{#if editing === index}
 					<form onsubmit={commitEdit} class="flex items-center gap-1">
 						<input
@@ -535,7 +535,7 @@
 									offset
 								)}{/each}
 							<span
-								class="inline-flex items-center rounded-xl border border-amber-400 bg-amber-200 px-1 py-0.5 shadow-sm"
+								class="inline-block rounded-xl border border-amber-400 bg-amber-200 px-1 py-0.5 align-baseline shadow-sm"
 							>
 								{#each line.words.slice(low, high + 1) as word, offset (offset)}{@render wordSpan(
 										index,
