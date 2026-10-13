@@ -89,6 +89,13 @@
 		expandedEntries[localId] = !expandedEntries[localId];
 	}
 
+	/** Which scribbles show their player (default: collapsed). */
+	let expandedScribbles = $state<Record<string, boolean>>({});
+
+	function toggleScribble(scribbleId: string) {
+		expandedScribbles[scribbleId] = !expandedScribbles[scribbleId];
+	}
+
 	/** Scrapbooks. */
 	let scrapbooks = $state<ScrapbookSummary[]>([]);
 	let activeScrapbookId = $state('');
@@ -776,8 +783,8 @@
 		if (!ref) return;
 
 		if (ref.session_id === SCRIBBLES_SESSION_ID) {
-			// Scribbles always show their player, so there is nothing to expand.
 			tab = 'scribbles';
+			expandedScribbles[ref.take_id] = true;
 		} else {
 			const entry = entries.find((candidate) => candidate.serverId === ref.take_id);
 			if (!entry) return; // the line came from another session; not shown here
@@ -1255,6 +1262,31 @@
 									>
 										<div class="flex items-center justify-between gap-3">
 											<div class="flex min-w-0 flex-1 items-center gap-2">
+												<button
+													type="button"
+													onclick={() => toggleScribble(scribble.id)}
+													aria-expanded={Boolean(expandedScribbles[scribble.id])}
+													aria-label={expandedScribbles[scribble.id]
+														? 'Collapse scribble'
+														: 'Expand scribble'}
+													title={expandedScribbles[scribble.id] ? 'Collapse' : 'Expand'}
+													class="shrink-0 rounded-md p-1 text-neutral-400 hover:bg-neutral-200 hover:text-neutral-700"
+												>
+													<svg
+														viewBox="0 0 24 24"
+														class="size-4 transition-transform {expandedScribbles[scribble.id]
+															? 'rotate-90'
+															: ''}"
+														fill="none"
+														stroke="currentColor"
+														stroke-width="2"
+														stroke-linecap="round"
+														stroke-linejoin="round"
+														aria-hidden="true"
+													>
+														<path d="m9 6 6 6-6 6" />
+													</svg>
+												</button>
 												<span class="font-mono text-xs text-neutral-400"
 													>{String(scribble.index).padStart(2, '0')}</span
 												>
@@ -1267,8 +1299,6 @@
 													<span class="shrink-0 text-xs text-neutral-400">Unprocessed</span>
 												{:else if scribble.status === 'error'}
 													<span class="shrink-0 text-xs text-red-600">Failed</span>
-												{:else}
-													<span class="shrink-0 text-xs text-emerald-600">Ready</span>
 												{/if}
 											</div>
 											<div class="flex shrink-0 items-center gap-1">
@@ -1296,22 +1326,24 @@
 											<p class="text-xs text-red-600">{scribble.error}</p>
 										{/if}
 
-										{#if scribble.status === 'done' && scribbleAudio(scribble)}
-											<EntryPlayer
-												src={scribbleAudio(scribble)}
-												lyrics={scribble.lyrics}
-												framed={false}
-												downloadName={scribble.name}
-												dragLine={(lineIndex) => scribbleLineRef(scribble, lineIndex)}
-											/>
-										{:else if scribbleAudio(scribble)}
-											<EntryPlayer
-												src={scribbleAudio(scribble)}
-												lyrics={[]}
-												emptyLabel={null}
-												framed={false}
-												downloadName={scribble.name}
-											/>
+										{#if expandedScribbles[scribble.id]}
+											{#if scribble.status === 'done' && scribbleAudio(scribble)}
+												<EntryPlayer
+													src={scribbleAudio(scribble)}
+													lyrics={scribble.lyrics}
+													framed={false}
+													downloadName={scribble.name}
+													dragLine={(lineIndex) => scribbleLineRef(scribble, lineIndex)}
+												/>
+											{:else if scribbleAudio(scribble)}
+												<EntryPlayer
+													src={scribbleAudio(scribble)}
+													lyrics={[]}
+													emptyLabel={null}
+													framed={false}
+													downloadName={scribble.name}
+												/>
+											{/if}
 										{/if}
 									</li>
 								{/each}
@@ -1401,8 +1433,6 @@
 													<span class="shrink-0 text-xs text-neutral-400">Unprocessed</span>
 												{:else if entry.status === 'error'}
 													<span class="shrink-0 text-xs text-red-600">Failed</span>
-												{:else}
-													<span class="shrink-0 text-xs text-emerald-600">Ready</span>
 												{/if}
 											{/if}
 										</div>

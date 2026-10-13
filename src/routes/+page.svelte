@@ -23,7 +23,7 @@
 		type LyricLine,
 		type TakeMeta
 	} from '#lib/connection.svelte.ts';
-	import { formatShareCode, parseShareInput, toHref } from '#lib/share.ts';
+	import { parseShareInput, toHref } from '#lib/share.ts';
 	import { formatSessionDate, newEntryName, newTakeId, type Session } from '#lib/session.ts';
 	import { extensionForMime, Recorder } from '#lib/recorder.svelte.ts';
 	import EntryPlayer from '#lib/components/EntryPlayer.svelte';
@@ -61,6 +61,8 @@
 	let scribbleBusy = $state(false);
 	let editingScribbleId = $state<string | null>(null);
 	let scribbleNameDraft = $state('');
+	/** Whether the whole Scribbles section is shown. */
+	let scribblesOpen = $state(true);
 
 	const recorder = new Recorder();
 	let segmentStartedAt = $state(0);
@@ -77,12 +79,6 @@
 
 	// Our generated ids sort chronologically, so newest sessions come first.
 	let sessions = $derived([...connection.sessions].sort((a, b) => (a.id < b.id ? 1 : -1)));
-
-	// The friendly name of the session we just made, for the "ready" note.
-	let activeName = $derived(
-		connection.sessions.find((s) => s.id === connection.activeSession)?.name ??
-			connection.activeSession
-	);
 
 	$effect(() => {
 		if (ready && !api.url && connection.status !== 'checking') inputEl?.focus();
@@ -213,6 +209,12 @@
 		segmentStartedAt = 0;
 	}
 
+	/** Collapse/expand the whole section; stopping the mic if we hide it. */
+	function toggleScribblesSection() {
+		if (scribblesOpen) recorder.stop();
+		scribblesOpen = !scribblesOpen;
+	}
+
 	function scribbleAudio(scribble: Scribble): string {
 		const url = api.url;
 		if (!url) return '';
@@ -329,16 +331,6 @@
 		await replaceState(resolve('/'), {});
 	}
 
-	/**
-	 * Show the share code grouped (`zz4k-1q`) as it is typed, while leaving a
-	 * url (which contains `:`/`/`/`.`) untouched. Hyphens are cosmetic — parsing
-	 * strips them, so typing or pasting either form works.
-	 */
-	function reformatCode(event: Event) {
-		const value = (event.currentTarget as HTMLInputElement).value;
-		input = /[:/.]/.test(value) ? value : formatShareCode(value);
-	}
-
 	function beginRename(session: Session) {
 		editingId = session.id;
 		nameDraft = session.name;
@@ -411,10 +403,6 @@
 
 				{#if connection.error}
 					<p class="text-center text-xs text-red-600">{connection.error}</p>
-				{:else if connection.activeSession}
-					<p class="text-center text-xs text-emerald-600">
-						{activeName} is ready for takes.
-					</p>
 				{/if}
 
 				<section class="space-y-3">
@@ -498,13 +486,6 @@
 														{formatSessionDate(session.updatedAt)}
 													</span>
 												{/if}
-												{#if session.id === connection.activeSession}
-													<span
-														class="shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] tracking-wide text-emerald-700 uppercase"
-													>
-														ready
-													</span>
-												{/if}
 											</div>
 											<div class="flex shrink-0 items-center gap-1">
 												<button
@@ -529,160 +510,186 @@
 				</section>
 
 				<section class="space-y-3">
-					<div class="flex items-center justify-between">
-						<h2 class="text-xs font-medium tracking-wide text-neutral-500 uppercase">Scribbles</h2>
-						<span class="text-xs text-neutral-400">{scribbles.length}</span>
-					</div>
-					<p class="text-xs text-neutral-500">
-						A journal shared across every session. Record one here and use it anywhere.
-					</p>
-
-					<div
-						class="flex flex-wrap items-center gap-3 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3"
+					<button
+						type="button"
+						onclick={toggleScribblesSection}
+						aria-expanded={scribblesOpen}
+						class="flex w-full items-center justify-between"
 					>
-						{#if recorder.state === 'error'}
-							<p class="text-sm text-red-600">{recorder.error}</p>
-							<button
-								onclick={startRecording}
-								class="rounded-lg bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800"
+						<span class="flex items-center gap-1">
+							<svg
+								viewBox="0 0 24 24"
+								class="size-4 text-neutral-400 transition-transform {scribblesOpen
+									? 'rotate-90'
+									: ''}"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								aria-hidden="true"
 							>
-								Try again
-							</button>
-						{:else if recorder.recording}
-							<span class="size-2.5 animate-pulse rounded-full bg-red-600"></span>
-							<span class="text-sm font-medium">Recording</span>
-							<span class="font-mono text-sm text-neutral-500">{formatElapsed(elapsed)}</span>
-							<div class="ml-auto flex items-center gap-2">
-								<button
-									onclick={saveScribble}
-									disabled={scribbleBusy}
-									class="rounded-lg bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-60"
-								>
-									Keep &amp; process
-								</button>
-								<button
-									onclick={discardScribble}
-									class="rounded-lg border border-neutral-300 px-3 py-1.5 text-sm text-neutral-700 hover:bg-neutral-100"
-								>
-									Discard
-								</button>
-							</div>
-						{:else}
-							<button
-								onclick={startRecording}
-								class="rounded-full bg-red-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-red-700"
+								<path d="m9 6 6 6-6 6" />
+							</svg>
+							<span class="text-xs font-medium tracking-wide text-neutral-500 uppercase"
+								>Scribbles</span
 							>
-								Record scribble
-							</button>
-							<span class="text-xs text-neutral-500"
-								>It'll appear in every session's Scribbles tab.</span
-							>
-						{/if}
-					</div>
+						</span>
+						<span class="text-xs text-neutral-400">{scribbles.length}</span>
+					</button>
 
-					{#if scribbleError}
-						<p class="text-xs text-red-600">{scribbleError}</p>
-					{/if}
-
-					{#if scribbles.length === 0}
-						<p
-							class="rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-400"
-						>
-							{scribblesLoading ? 'Loading…' : 'No scribbles yet.'}
+					{#if scribblesOpen}
+						<p class="text-xs text-neutral-500">
+							A journal shared across every session. Record one here and use it anywhere.
 						</p>
-					{:else}
-						<ul class="space-y-2">
-							{#each scribbles as scribble (scribble.id)}
-								<li class="space-y-3 rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3">
-									<div class="flex items-center justify-between gap-3">
-										{#if editingScribbleId === scribble.id}
-											<form
-												onsubmit={handleScribbleRename}
-												class="flex min-w-0 flex-1 items-center gap-2"
-											>
-												<input
-													bind:value={scribbleNameDraft}
-													aria-label="Scribble name"
-													class="min-w-0 flex-1 rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm focus:border-neutral-500 focus:outline-none"
-												/>
-												<button
-													type="submit"
-													class="shrink-0 rounded-md bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-800"
+
+						<div
+							class="flex flex-wrap items-center gap-3 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3"
+						>
+							{#if recorder.state === 'error'}
+								<p class="text-sm text-red-600">{recorder.error}</p>
+								<button
+									onclick={startRecording}
+									class="rounded-lg bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800"
+								>
+									Try again
+								</button>
+							{:else if recorder.recording}
+								<span class="size-2.5 animate-pulse rounded-full bg-red-600"></span>
+								<span class="text-sm font-medium">Recording</span>
+								<span class="font-mono text-sm text-neutral-500">{formatElapsed(elapsed)}</span>
+								<div class="ml-auto flex items-center gap-2">
+									<button
+										onclick={saveScribble}
+										disabled={scribbleBusy}
+										class="rounded-lg bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-60"
+									>
+										Keep &amp; process
+									</button>
+									<button
+										onclick={discardScribble}
+										class="rounded-lg border border-neutral-300 px-3 py-1.5 text-sm text-neutral-700 hover:bg-neutral-100"
+									>
+										Discard
+									</button>
+								</div>
+							{:else}
+								<button
+									onclick={startRecording}
+									class="rounded-full bg-red-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-red-700"
+								>
+									Record scribble
+								</button>
+								<span class="text-xs text-neutral-500"
+									>It'll appear in every session's Scribbles tab.</span
+								>
+							{/if}
+						</div>
+
+						{#if scribbleError}
+							<p class="text-xs text-red-600">{scribbleError}</p>
+						{/if}
+
+						{#if scribbles.length === 0}
+							<p
+								class="rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-400"
+							>
+								{scribblesLoading ? 'Loading…' : 'No scribbles yet.'}
+							</p>
+						{:else}
+							<ul class="space-y-2">
+								{#each scribbles as scribble (scribble.id)}
+									<li
+										class="space-y-3 rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3"
+									>
+										<div class="flex items-center justify-between gap-3">
+											{#if editingScribbleId === scribble.id}
+												<form
+													onsubmit={handleScribbleRename}
+													class="flex min-w-0 flex-1 items-center gap-2"
 												>
-													Save
-												</button>
-												<button
-													type="button"
-													onclick={cancelScribbleRename}
-													class="shrink-0 rounded-md px-3 py-1.5 text-xs text-neutral-600 hover:bg-neutral-100"
-												>
-													Cancel
-												</button>
-											</form>
-										{:else}
-											<div class="flex min-w-0 flex-1 items-center gap-2">
-												<span class="font-mono text-xs text-neutral-400"
-													>{String(scribble.index).padStart(2, '0')}</span
-												>
-												<button
-													onclick={() => beginScribbleRename(scribble)}
-													title="Rename scribble"
-													class="truncate text-sm font-medium text-neutral-800 hover:text-neutral-950"
-												>
-													{scribble.name}
-												</button>
-												{#if scribble.status === 'processing'}
-													<span class="shrink-0 text-xs text-neutral-400">Processing…</span>
-												{:else if scribble.status === 'recorded'}
-													<span class="shrink-0 text-xs text-neutral-400">Unprocessed</span>
-												{:else if scribble.status === 'error'}
-													<span class="shrink-0 text-xs text-red-600">Failed</span>
-												{:else}
-													<span class="shrink-0 text-xs text-emerald-600">Ready</span>
-												{/if}
-											</div>
-										{/if}
-										<div class="flex shrink-0 items-center gap-1">
-											{#if scribble.status === 'recorded'}
-												<button
-													onclick={() => processScribbleEntry(scribble)}
-													class="rounded-md px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100"
-												>
-													Process
-												</button>
+													<input
+														bind:value={scribbleNameDraft}
+														aria-label="Scribble name"
+														class="min-w-0 flex-1 rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm focus:border-neutral-500 focus:outline-none"
+													/>
+													<button
+														type="submit"
+														class="shrink-0 rounded-md bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-800"
+													>
+														Save
+													</button>
+													<button
+														type="button"
+														onclick={cancelScribbleRename}
+														class="shrink-0 rounded-md px-3 py-1.5 text-xs text-neutral-600 hover:bg-neutral-100"
+													>
+														Cancel
+													</button>
+												</form>
+											{:else}
+												<div class="flex min-w-0 flex-1 items-center gap-2">
+													<span class="font-mono text-xs text-neutral-400"
+														>{String(scribble.index).padStart(2, '0')}</span
+													>
+													<button
+														onclick={() => beginScribbleRename(scribble)}
+														title="Rename scribble"
+														class="truncate text-sm font-medium text-neutral-800 hover:text-neutral-950"
+													>
+														{scribble.name}
+													</button>
+													{#if scribble.status === 'processing'}
+														<span class="shrink-0 text-xs text-neutral-400">Processing…</span>
+													{:else if scribble.status === 'recorded'}
+														<span class="shrink-0 text-xs text-neutral-400">Unprocessed</span>
+													{:else if scribble.status === 'error'}
+														<span class="shrink-0 text-xs text-red-600">Failed</span>
+													{/if}
+												</div>
 											{/if}
-											<button
-												onclick={() => removeScribble(scribble)}
-												class="rounded-md px-2 py-1 text-xs text-neutral-500 hover:bg-red-50 hover:text-red-600"
-											>
-												Delete
-											</button>
+											<div class="flex shrink-0 items-center gap-1">
+												{#if scribble.status === 'recorded'}
+													<button
+														onclick={() => processScribbleEntry(scribble)}
+														class="rounded-md px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100"
+													>
+														Process
+													</button>
+												{/if}
+												<button
+													onclick={() => removeScribble(scribble)}
+													class="rounded-md px-2 py-1 text-xs text-neutral-500 hover:bg-red-50 hover:text-red-600"
+												>
+													Delete
+												</button>
+											</div>
 										</div>
-									</div>
 
-									{#if scribble.error}
-										<p class="text-xs text-red-600">{scribble.error}</p>
-									{/if}
+										{#if scribble.error}
+											<p class="text-xs text-red-600">{scribble.error}</p>
+										{/if}
 
-									{#if scribble.status === 'done' && scribbleAudio(scribble)}
-										<EntryPlayer
-											src={scribbleAudio(scribble)}
-											lyrics={scribble.lyrics}
-											framed={false}
-											downloadName={scribble.name}
-										/>
-									{:else if scribbleAudio(scribble)}
-										<EntryPlayer
-											src={scribbleAudio(scribble)}
-											lyrics={[]}
-											emptyLabel={null}
-											framed={false}
-											downloadName={scribble.name}
-										/>
-									{/if}
-								</li>
-							{/each}
-						</ul>
+										{#if scribble.status === 'done' && scribbleAudio(scribble)}
+											<EntryPlayer
+												src={scribbleAudio(scribble)}
+												lyrics={scribble.lyrics}
+												framed={false}
+												downloadName={scribble.name}
+											/>
+										{:else if scribbleAudio(scribble)}
+											<EntryPlayer
+												src={scribbleAudio(scribble)}
+												lyrics={[]}
+												emptyLabel={null}
+												framed={false}
+												downloadName={scribble.name}
+											/>
+										{/if}
+									</li>
+								{/each}
+							</ul>
+						{/if}
 					{/if}
 				</section>
 			</div>
@@ -726,8 +733,7 @@
 							spellcheck="false"
 							placeholder="e.g. zz4k-1q"
 							bind:this={inputEl}
-							value={input}
-							oninput={reformatCode}
+							bind:value={input}
 							class="w-full rounded-lg border border-neutral-300 bg-white px-4 py-3 font-mono text-sm text-neutral-900 placeholder:text-neutral-400 focus:border-neutral-500 focus:ring-2 focus:ring-neutral-200 focus:outline-none"
 						/>
 						{#if error}
