@@ -45,6 +45,8 @@ export type LyricLine = {
 	raw?: boolean;
 	/** Scrapbook renders tag each line with the take it came from. */
 	source?: { session_id: string; take_id: string; line_index: number };
+	/** Scrapbook section grouping (UI only; audio is unaffected). */
+	group?: { id: string; type: string };
 };
 
 /** The payload returned once a take has been processed. */
@@ -567,6 +569,8 @@ export type LineRef = {
 		words?: LyricWord[];
 		text?: string | null;
 	};
+	/** Optional section grouping within a scrapbook (chorus/verse/bridge/other). */
+	group?: { id: string; type: string };
 };
 
 export type ScrapbookSummary = {

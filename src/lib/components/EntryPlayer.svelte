@@ -17,6 +17,8 @@
 		onLocateLine,
 		onMergeSelected,
 		onCarve,
+		onGroupLines,
+		onUngroup,
 		framed = true
 	}: {
 		src: string;
@@ -44,11 +46,40 @@
 		onMergeSelected?: (indices: number[]) => void;
 		/** Drag across words of a raw line to carve a bubble. */
 		onCarve?: (index: number, from: number, to: number) => void;
+		/** Group the selected lines under a section type (chorus/verse/bridge/other). */
+		onGroupLines?: (indices: number[], type: string) => void;
+		/** Break a group apart again. */
+		onUngroup?: (groupId: string) => void;
 		/** Draw the rounded border/background bubble. Off when the parent supplies it. */
 		framed?: boolean;
 	} = $props();
 
-	type Line = { text: string; start: number; end: number; words: string[]; raw: boolean };
+	type Group = { id: string; type: string };
+	type Line = {
+		text: string;
+		start: number;
+		end: number;
+		words: string[];
+		raw: boolean;
+		group?: Group;
+	};
+	type Row =
+		| { kind: 'line'; index: number }
+		| { kind: 'group'; id: string; type: string; indices: number[] };
+
+	/** Colours for the section groups: chorus blue, verse rose, bridge green, other grey. */
+	const SECTION_STYLES: Record<string, string> = {
+		chorus: 'border-blue-400 bg-blue-200 text-blue-900',
+		verse: 'border-rose-400 bg-rose-200 text-rose-900',
+		bridge: 'border-green-400 bg-green-200 text-green-900',
+		other: 'border-neutral-300 bg-neutral-200 text-neutral-700'
+	};
+	const SECTIONS: { type: string; label: string }[] = [
+		{ type: 'chorus', label: 'Chorus' },
+		{ type: 'verse', label: 'Verse' },
+		{ type: 'bridge', label: 'Bridge' },
+		{ type: 'other', label: 'Other' }
+	];
 
 	let audio = $state<HTMLAudioElement | null>(null);
 	let rootEl = $state<HTMLDivElement | null>(null);
@@ -89,7 +120,8 @@
 					start,
 					end,
 					words: rawWords.map((word) => word.word),
-					raw: Boolean(line.raw)
+					raw: Boolean(line.raw),
+					group: line.group
 				};
 			})
 			.filter((line) => line.text.length > 0);
@@ -109,6 +141,62 @@
 	let selectable = $derived(Boolean(dragLine || allowReorder));
 	let droppable = $derived(Boolean(onDropLines || onMoveLines));
 	let activeLine = $derived(playable && playing ? findLine(lines, currentTime) : -1);
+
+	/** Which groups are expanded to show their lines (double-click toggles). */
+	let expandedGroups = $state<Record<string, boolean>>({});
+
+	/** Collapse runs of lines that share a group id into a single group row. */
+	function buildRows(items: Line[]): Row[] {
+		const rows: Row[] = [];
+		let i = 0;
+		while (i < items.length) {
+			const group = items[i].group;
+			if (group) {
+				const indices = [i];
+				let j = i + 1;
+				while (j < items.length && items[j].group?.id === group.id) {
+					indices.push(j);
+					j++;
+				}
+				rows.push({ kind: 'group', id: group.id, type: group.type, indices });
+				i = j;
+			} else {
+				rows.push({ kind: 'line', index: i });
+				i++;
+			}
+		}
+		return rows;
+	}
+
+	let rows = $derived(buildRows(lines));
+
+	function rowKey(row: Row): string {
+		return row.kind === 'line' ? `line-${row.index}` : `group-${row.id}-${row.indices[0]}`;
+	}
+
+	function sectionStyle(type: string): string {
+		return SECTION_STYLES[type] ?? SECTION_STYLES.other;
+	}
+
+	function sectionLabel(type: string): string {
+		return SECTIONS.find((section) => section.type === type)?.label ?? 'Other';
+	}
+
+	function groupBubbleClass(type: string): string {
+		return `w-fit max-w-full select-none rounded-xl border px-2.5 py-1 text-left text-sm font-medium leading-snug ${sectionStyle(type)}`;
+	}
+
+	function onGroupClick(indices: number[], event: MouseEvent) {
+		if (!selectable) return;
+		if (event.ctrlKey || event.metaKey) return;
+		selected = [...indices];
+		anchor = indices[0];
+	}
+
+	function onGroupDoubleClick(id: string, event: MouseEvent) {
+		event.preventDefault();
+		expandedGroups[id] = !expandedGroups[id];
+	}
 
 	// A new line set (re-render, reorder, add) invalidates selection/editing.
 	$effect(() => {
@@ -315,15 +403,19 @@
 		}
 	}
 
-	/** The gap nearest the pointer: 0 = before the first bubble, n = after the last. */
+	function rowStart(element: HTMLElement): number {
+		return Number(element.dataset.lineStart ?? 0);
+	}
+
+	/** The line index the drop lands on, from the pointer's y. */
 	function insertionIndex(clientY: number): number {
 		if (!listEl) return lines.length;
-		const rows = [...listEl.querySelectorAll<HTMLElement>('[data-row]')];
-		for (let index = 0; index < rows.length; index++) {
-			const rect = rows[index].getBoundingClientRect();
-			if (clientY < rect.top + rect.height / 2) return index;
+		const rowEls = [...listEl.querySelectorAll<HTMLElement>('[data-row][data-line-start]')];
+		for (const element of rowEls) {
+			const rect = element.getBoundingClientRect();
+			if (clientY < rect.top + rect.height / 2) return rowStart(element);
 		}
-		return rows.length;
+		return lines.length;
 	}
 
 	function onListDragOver(event: DragEvent) {
@@ -333,15 +425,15 @@
 		dropTop = indicatorTop(dropIndex);
 	}
 
-	function indicatorTop(index: number): number {
+	function indicatorTop(lineIndex: number): number {
 		if (!listEl) return 0;
-		const rows = [...listEl.querySelectorAll<HTMLElement>('[data-row]')];
-		if (rows.length === 0) return 0;
-		if (index >= rows.length) {
-			const last = rows[rows.length - 1];
-			return last.offsetTop + last.offsetHeight + 2;
+		const rowEls = [...listEl.querySelectorAll<HTMLElement>('[data-row][data-line-start]')];
+		if (rowEls.length === 0) return 0;
+		for (const element of rowEls) {
+			if (rowStart(element) >= lineIndex) return Math.max(0, element.offsetTop - 2);
 		}
-		return Math.max(0, rows[index].offsetTop - 2);
+		const last = rowEls[rowEls.length - 1];
+		return last.offsetTop + last.offsetHeight + 2;
 	}
 
 	function onListDragLeave(event: DragEvent) {
@@ -427,6 +519,69 @@
 		>
 	{/snippet}
 
+	{#snippet lineRow(index: number)}
+		<div role="listitem" data-row data-line-start={index} class="flex items-center gap-1">
+			{#if editing === index}
+				<form onsubmit={commitEdit} class="flex items-center gap-1">
+					<input
+						bind:value={editDraft}
+						aria-label="Line text"
+						class="min-w-0 rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm focus:border-neutral-500 focus:outline-none"
+					/>
+					<button
+						type="submit"
+						class="shrink-0 rounded-md bg-neutral-900 px-2 py-1 text-xs font-medium text-white hover:bg-neutral-800"
+					>
+						Save
+					</button>
+					<button
+						type="button"
+						onclick={cancelEdit}
+						class="shrink-0 rounded-md px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-100"
+					>
+						Cancel
+					</button>
+				</form>
+			{:else}
+				<button
+					type="button"
+					data-active={index === activeLine}
+					data-line
+					data-line-index={index}
+					draggable={Boolean(dragLine || allowReorder) && !lines[index]?.raw}
+					ondragstart={(event) => dragStart(event, index)}
+					ondragend={clearDrop}
+					onmousedown={(event) => {
+						if (event.shiftKey) event.preventDefault();
+					}}
+					onclick={(event) => onLineClick(index, event)}
+					ondblclick={(event) => onLineDoubleClick(index, event)}
+					title={onLocateLine
+						? 'Ctrl-click to reveal the recording this line came from'
+						: undefined}
+					class={bubbleClass(index)}
+				>
+					{#each lines[index]?.words ?? [] as word, wordIndex (wordIndex)}{@render wordSpan(
+							index,
+							word,
+							wordIndex,
+							isCarving(index, wordIndex)
+						)}{/each}
+				</button>
+				{#if onRemove}
+					<button
+						type="button"
+						onclick={() => onRemove(index)}
+						aria-label="Remove line"
+						class="shrink-0 rounded px-1.5 py-0.5 text-xs text-neutral-400 hover:bg-red-50 hover:text-red-600"
+					>
+						×
+					</button>
+				{/if}
+			{/if}
+		</div>
+	{/snippet}
+
 	<div class="flex items-center gap-3">
 		<button
 			type="button"
@@ -491,6 +646,22 @@
 		</button>
 	</div>
 
+	{#if onGroupLines && selected.length}
+		<!-- Group the selection into a section; each button looks like a coloured bubble. -->
+		<div class="flex flex-wrap items-center gap-1.5">
+			<span class="text-xs text-neutral-400">Group {selected.length} as</span>
+			{#each SECTIONS as section (section.type)}
+				<button
+					type="button"
+					onclick={() => onGroupLines([...selected], section.type)}
+					class="rounded-xl border px-2.5 py-1 text-xs font-medium {sectionStyle(section.type)}"
+				>
+					{section.label}
+				</button>
+			{/each}
+		</div>
+	{/if}
+
 	<div
 		bind:this={listEl}
 		role="list"
@@ -503,67 +674,39 @@
 		{#if lines.length === 0 && emptyLabel}
 			<p class="px-1 py-2 text-sm text-neutral-400">{emptyLabel}</p>
 		{/if}
-		{#each lines as line, index (index)}
-			<div role="listitem" data-row class="flex items-center gap-1">
-				{#if editing === index}
-					<form onsubmit={commitEdit} class="flex items-center gap-1">
-						<input
-							bind:value={editDraft}
-							aria-label="Line text"
-							class="min-w-0 rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm focus:border-neutral-500 focus:outline-none"
-						/>
-						<button
-							type="submit"
-							class="shrink-0 rounded-md bg-neutral-900 px-2 py-1 text-xs font-medium text-white hover:bg-neutral-800"
-						>
-							Save
-						</button>
+		{#each rows as row (rowKey(row))}
+			{#if row.kind === 'line'}
+				{@render lineRow(row.index)}
+			{:else}
+				<div role="listitem" class="flex flex-col gap-1">
+					<div data-row data-line-start={row.indices[0]} class="flex items-center gap-1">
 						<button
 							type="button"
-							onclick={cancelEdit}
-							class="shrink-0 rounded-md px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-100"
+							onclick={(event) => onGroupClick(row.indices, event)}
+							ondblclick={(event) => onGroupDoubleClick(row.id, event)}
+							title="Double-click to show the lines inside"
+							class={groupBubbleClass(row.type)}
 						>
-							Cancel
+							{sectionLabel(row.type)} · {row.indices.length}
+							<span class="ml-1 text-xs opacity-70">{expandedGroups[row.id] ? '▾' : '▸'}</span>
 						</button>
-					</form>
-				{:else}
-					<button
-						type="button"
-						data-active={index === activeLine}
-						data-line
-						data-line-index={index}
-						draggable={Boolean(dragLine || allowReorder) && !lines[index].raw}
-						ondragstart={(event) => dragStart(event, index)}
-						ondragend={clearDrop}
-						onmousedown={(event) => {
-							if (event.shiftKey) event.preventDefault();
-						}}
-						onclick={(event) => onLineClick(index, event)}
-						ondblclick={(event) => onLineDoubleClick(index, event)}
-						title={onLocateLine
-							? 'Ctrl-click to reveal the recording this line came from'
-							: undefined}
-						class={bubbleClass(index)}
-					>
-						{#each line.words as word, wordIndex (wordIndex)}{@render wordSpan(
-								index,
-								word,
-								wordIndex,
-								isCarving(index, wordIndex)
-							)}{/each}
-					</button>
-					{#if onRemove}
-						<button
-							type="button"
-							onclick={() => onRemove(index)}
-							aria-label="Remove line"
-							class="shrink-0 rounded px-1.5 py-0.5 text-xs text-neutral-400 hover:bg-red-50 hover:text-red-600"
-						>
-							×
-						</button>
+						{#if onUngroup}
+							<button
+								type="button"
+								onclick={() => onUngroup(row.id)}
+								class="shrink-0 rounded px-1.5 py-0.5 text-xs text-neutral-400 hover:bg-neutral-200 hover:text-neutral-700"
+							>
+								Ungroup
+							</button>
+						{/if}
+					</div>
+					{#if expandedGroups[row.id]}
+						<div class="flex flex-col gap-1 pl-3">
+							{#each row.indices as lineIndex (lineIndex)}{@render lineRow(lineIndex)}{/each}
+						</div>
 					{/if}
-				{/if}
-			</div>
+				</div>
+			{/if}
 		{/each}
 		{#if droppable && dropTop !== null}
 			<div

@@ -909,12 +909,40 @@
 				words: base?.words ?? dataWords,
 				// The text comes from the line's snapshot, so re-splitting the
 				// journal never changes a scrapbook that already holds it.
-				text: label || `Line ${ref.line_index + 1}`
+				text: label || `Line ${ref.line_index + 1}`,
+				group: ref.group
 			};
 		});
 	}
 
 	let scrapbookLines = $derived(scrapbookLinesFor());
+
+	/** Group a contiguous run of scrapbook lines under a section type. */
+	function groupScrapbookLines(indices: number[], type: string) {
+		if (!scrapbook || !indices.length) return;
+		const low = Math.min(...indices);
+		const high = Math.max(...indices);
+		const id = `g-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+		const lines = scrapbook.lines.map((ref, index) =>
+			index >= low && index <= high ? { ...ref, group: { id, type } } : ref
+		);
+		saveLines(lines);
+	}
+
+	/** Break a section group back into plain lines. */
+	function ungroupScrapbookLines(groupId: string) {
+		if (!scrapbook) return;
+		const lines = scrapbook.lines.map((ref) => {
+			if (ref.group?.id !== groupId) return ref;
+			return {
+				session_id: ref.session_id,
+				take_id: ref.take_id,
+				line_index: ref.line_index,
+				data: ref.data
+			};
+		});
+		saveLines(lines);
+	}
 
 	let scrapbookSrc = $derived(
 		api.url && activeScrapbookId && scrapbook?.render && renderInSync
@@ -1120,6 +1148,8 @@
 								onMoveLines={moveLines}
 								onRemove={removeLineAt}
 								onLocateLine={locateScrapbookLine}
+								onGroupLines={groupScrapbookLines}
+								onUngroup={ungroupScrapbookLines}
 							/>
 							{#if !scrapbook.render?.timeline?.length && !scrapbookBusy}
 								<button
