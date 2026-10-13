@@ -14,6 +14,7 @@
 		establish,
 		getScribble,
 		listScribbles,
+		live,
 		processScribble,
 		refreshSessions,
 		renameScribble as renameScribbleApi,
@@ -115,12 +116,14 @@
 		const url = api.url;
 		if (!url) return;
 		let timer: number | undefined;
-		const stop = subscribeChanges(url, () => {
+		const stop = subscribeChanges(url, (event) => {
+			const path = event.path ?? '';
+			if (!path.startsWith('/sessions') && !path.startsWith('/scribbles')) return;
 			window.clearTimeout(timer);
 			timer = window.setTimeout(() => {
-				void refreshSessions();
-				void loadScribbles(url);
-			}, 500);
+				if (path.startsWith('/sessions')) void refreshSessions();
+				if (path.startsWith('/scribbles')) void loadScribbles(url);
+			}, 250);
 		});
 		return () => {
 			window.clearTimeout(timer);
@@ -594,6 +597,15 @@
 				<div class="space-y-1 text-center">
 					<h1 class="text-2xl font-semibold tracking-tight">Connected</h1>
 					<p class="text-sm text-neutral-500">You're connected to your processing server.</p>
+					{#if live.connected}
+						<p
+							class="flex items-center justify-center gap-1 text-xs text-neutral-400"
+							title="Live: changes from other people appear automatically"
+						>
+							<span class="size-2 animate-pulse rounded-full bg-neutral-400"></span>
+							Live
+						</p>
+					{/if}
 				</div>
 
 				<div class="flex gap-3">

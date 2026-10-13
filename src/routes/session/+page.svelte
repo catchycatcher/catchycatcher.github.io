@@ -15,6 +15,7 @@
 		getTakeResult,
 		listScrapbooks,
 		listScribbles,
+		live,
 		processScribble,
 		processTake,
 		renderScrapbook,
@@ -153,21 +154,26 @@
 		void loadScribbles(url);
 	});
 
-	// Live updates: when another client writes anything, refetch what we show.
+	// Live updates: when another client writes to this session or the shared
+	// scribbles, refetch just that part so two people see each other's work.
 	$effect(() => {
 		const url = api.url;
 		const id = sessionId;
 		if (!url) return;
 		let timer: number | undefined;
-		const stop = subscribeChanges(url, () => {
+		const stop = subscribeChanges(url, (event) => {
+			const path = event.path ?? '';
+			const mine = path.startsWith(`/sessions/${id}`);
+			const scribbles = path.startsWith('/scribbles');
+			if (!id || (!mine && !scribbles)) return;
 			window.clearTimeout(timer);
 			timer = window.setTimeout(() => {
-				if (id) {
+				if (mine) {
 					void loadSession(url, id);
 					void refreshScrapbooks(url);
 				}
-				void loadScribbles(url);
-			}, 500);
+				if (scribbles) void loadScribbles(url);
+			}, 250);
 		});
 		return () => {
 			window.clearTimeout(timer);
@@ -1272,9 +1278,20 @@
 			</a>
 			<h1 class="truncate text-xl font-semibold tracking-tight">{sessionName || 'Session'}</h1>
 		</div>
-		<a href={resolve('/')} class="shrink-0 text-xs text-neutral-500 hover:text-neutral-900">
-			All sessions
-		</a>
+		<div class="flex shrink-0 items-center gap-3">
+			{#if live.connected}
+				<span
+					class="flex items-center gap-1 text-xs text-neutral-400"
+					title="Live: changes from other people appear automatically"
+				>
+					<span class="size-2 animate-pulse rounded-full bg-neutral-400"></span>
+					Live
+				</span>
+			{/if}
+			<a href={resolve('/')} class="text-xs text-neutral-500 hover:text-neutral-900">
+				All sessions
+			</a>
+		</div>
 	</header>
 
 	<div class="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-5 px-4 py-5 sm:px-6 lg:min-h-0">

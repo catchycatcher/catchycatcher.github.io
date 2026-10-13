@@ -132,19 +132,36 @@ export async function ping(url: string): Promise<boolean> {
 	}
 }
 
+/** A change event from the server's live feed. */
+export type ChangeEvent = { method?: string; path?: string; session_id?: string | null };
+
+/** Whether this client is currently receiving the server's live feed. */
+export const live = $state({ connected: false });
+
 /**
- * Subscribe to the server's live change feed (Server-Sent Events). Call the
- * returned function to stop listening. Returns a no-op when EventSource is
- * unavailable (e.g. during SSR).
+ * Subscribe to the server's live change feed (Server-Sent Events). ``onChange``
+ * is called with each event; call the returned function to stop listening.
+ * Returns a no-op when EventSource is unavailable (e.g. during SSR).
  */
-export function subscribeChanges(url: string, onChange: () => void): () => void {
+export function subscribeChanges(url: string, onChange: (event: ChangeEvent) => void): () => void {
 	if (typeof EventSource === 'undefined') return () => {};
 	const source = new EventSource(`${base(url)}/events`);
-	const handler = () => onChange();
-	source.addEventListener('change', handler);
+	const handler = (message: MessageEvent) => {
+		let event: ChangeEvent = {};
+		try {
+			event = JSON.parse(message.data) as ChangeEvent;
+		} catch {
+			/* keep it as an empty event */
+		}
+		onChange(event);
+	};
+	source.addEventListener('change', handler as EventListener);
+	source.onopen = () => (live.connected = true);
+	source.onerror = () => (live.connected = false);
 	return () => {
-		source.removeEventListener('change', handler);
+		source.removeEventListener('change', handler as EventListener);
 		source.close();
+		live.connected = false;
 	};
 }
 
