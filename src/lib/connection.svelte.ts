@@ -331,6 +331,8 @@ export type ScrapbookSummary = {
 	scrapbook_id: string;
 	name: string;
 	bpm: number;
+	/** True once the BPM was set by hand (it stops tracking the lines). */
+	bpm_manual?: boolean;
 	line_count: number;
 	created_at?: string;
 	updated_at?: string;
@@ -375,7 +377,7 @@ export async function getScrapbook(url: string, scrapbookId: string): Promise<Sc
 
 export async function createScrapbook(
 	url: string,
-	body: { name: string; bpm: number; lines: LineRef[] }
+	body: { name: string; lines: LineRef[]; bpm?: number }
 ): Promise<ScrapbookSummary> {
 	const response = await fetch(`${base(url)}/scrapbooks`, {
 		method: 'POST',

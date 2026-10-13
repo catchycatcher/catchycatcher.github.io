@@ -4,12 +4,22 @@
 	let {
 		src,
 		lyrics,
-		dragLine
+		dragPayload,
+		allowReorder = false,
+		onDropLine,
+		onReorder,
+		onRemove
 	}: {
 		src: string;
 		lyrics: LyricLine[];
-		/** When set, each line bubble becomes draggable with this payload. */
-		dragLine?: (lineIndex: number) => string | null;
+		/** When set, each bubble drags out this payload (journal → scrapbook). */
+		dragPayload?: (lineIndex: number) => string | null;
+		/** Allow bubbles to be dragged to reorder within this player. */
+		allowReorder?: boolean;
+		/** Accept a dragged line payload dropped at ``index``. */
+		onDropLine?: (payload: string, index: number) => void;
+		onReorder?: (from: number, to: number) => void;
+		onRemove?: (index: number) => void;
 	} = $props();
 
 	type Word = { text: string; start: number; end: number };
@@ -71,7 +81,9 @@
 	}
 
 	let lines = $derived(resolve(lyrics));
-	let activeLine = $derived(findLine(lines, currentTime));
+	let playable = $derived(Boolean(src));
+	let droppable = $derived(Boolean(onDropLine || onReorder));
+	let activeLine = $derived(playable ? findLine(lines, currentTime) : -1);
 	let activeWord = $derived(findWord(lines[activeLine]?.words ?? [], currentTime));
 
 	// Keep the line being sung in view as playback moves along.
@@ -99,13 +111,13 @@
 	});
 
 	function toggle() {
-		if (!audio) return;
+		if (!audio || !playable) return;
 		if (audio.paused) void audio.play();
 		else audio.pause();
 	}
 
 	function playFrom(seconds: number) {
-		if (!audio) return;
+		if (!audio || !playable) return;
 		audio.currentTime = seconds;
 		currentTime = seconds;
 		void audio.play();
@@ -113,6 +125,35 @@
 
 	function onSeek(event: Event) {
 		playFrom(Number((event.currentTarget as HTMLInputElement).value));
+	}
+
+	function dragStart(event: DragEvent, index: number) {
+		if (!event.dataTransfer) return;
+		if (dragPayload) {
+			const payload = dragPayload(index);
+			if (!payload) return;
+			event.dataTransfer.setData('application/x-catchy-line', payload);
+			event.dataTransfer.effectAllowed = 'copy';
+		} else if (allowReorder) {
+			event.dataTransfer.setData('application/x-catchy-index', String(index));
+			event.dataTransfer.effectAllowed = 'move';
+		}
+	}
+
+	function dropAt(event: DragEvent, index: number) {
+		const external = event.dataTransfer?.getData('application/x-catchy-line');
+		if (external && onDropLine) {
+			event.preventDefault();
+			event.stopPropagation();
+			onDropLine(external, index);
+			return;
+		}
+		const from = event.dataTransfer?.getData('application/x-catchy-index');
+		if (from !== undefined && from !== '' && onReorder) {
+			event.preventDefault();
+			event.stopPropagation();
+			onReorder(Number(from), index);
+		}
 	}
 
 	function format(seconds: number): string {
@@ -128,7 +169,8 @@
 			type="button"
 			onclick={toggle}
 			aria-label={playing ? 'Pause' : 'Play'}
-			class="flex size-9 shrink-0 items-center justify-center rounded-full bg-neutral-900 text-white hover:bg-neutral-700"
+			disabled={!playable}
+			class="flex size-9 shrink-0 items-center justify-center rounded-full bg-neutral-900 text-white hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-40"
 		>
 			{#if playing}
 				<svg viewBox="0 0 24 24" class="size-4 fill-current" aria-hidden="true">
@@ -148,53 +190,81 @@
 			step="0.01"
 			value={currentTime}
 			oninput={onSeek}
+			disabled={!playable}
 			aria-label="Seek"
-			class="h-1.5 flex-1 cursor-pointer accent-neutral-900"
+			class="h-1.5 flex-1 cursor-pointer accent-neutral-900 disabled:opacity-40"
 		/>
 		<span class="shrink-0 font-mono text-xs text-neutral-500">
 			{format(currentTime)} / {format(duration)}
 		</span>
 	</div>
 
-	<div bind:this={listEl} class="flex max-h-72 flex-col gap-1 overflow-y-auto">
+	<div
+		bind:this={listEl}
+		role="list"
+		aria-label="Lines"
+		class="flex max-h-72 flex-col gap-1 overflow-y-auto"
+		ondragover={(event) => {
+			if (droppable) event.preventDefault();
+		}}
+		ondrop={(event) => {
+			if (droppable) dropAt(event, lines.length);
+		}}
+	>
 		{#if lines.length === 0}
 			<p class="px-1 py-2 text-sm text-neutral-400">No words detected in this take.</p>
 		{/if}
 		{#each lines as line, index (index)}
-			<button
-				type="button"
-				data-active={index === activeLine}
-				draggable={dragLine ? dragLine(index) !== null : false}
-				ondragstart={(event) => {
-					const payload = dragLine?.(index);
-					if (!payload || !event.dataTransfer) return;
-					event.dataTransfer.setData('application/x-catchy-line', payload);
-					event.dataTransfer.effectAllowed = 'copy';
+			<div
+				role="listitem"
+				class="flex items-center gap-1 self-start"
+				ondragover={(event) => {
+					if (droppable) {
+						event.preventDefault();
+						event.stopPropagation();
+					}
 				}}
-				onclick={() => playFrom(line.start)}
-				class="w-fit max-w-full self-start rounded-xl border px-2.5 py-1 text-left text-sm leading-snug transition-colors {index ===
-				activeLine
-					? 'border-neutral-900 bg-white'
-					: 'border-neutral-200 bg-white/60 hover:bg-white'}"
+				ondrop={(event) => dropAt(event, index)}
 			>
-				{#each line.words as word, wordIndex (wordIndex)}
-					<span
-						class="rounded px-0.5 {index === activeLine && wordIndex === activeWord
-							? 'bg-amber-200 text-neutral-900'
-							: 'text-neutral-700'}"
+				<button
+					type="button"
+					data-active={index === activeLine}
+					draggable={Boolean(dragPayload || allowReorder)}
+					ondragstart={(event) => dragStart(event, index)}
+					onclick={() => playFrom(line.start)}
+					class="w-fit max-w-full rounded-xl border px-2.5 py-1 text-left text-sm leading-snug transition-colors {index ===
+					activeLine
+						? 'border-neutral-900 bg-white'
+						: 'border-neutral-200 bg-white/60 hover:bg-white'}"
+				>
+					{#each line.words as word, wordIndex (wordIndex)}
+						<span
+							class="rounded px-0.5 {index === activeLine && wordIndex === activeWord
+								? 'bg-amber-200 text-neutral-900'
+								: 'text-neutral-700'}"
+						>
+							{word.text}
+						</span>
+						{#if wordIndex < line.words.length - 1}<span> </span>{/if}
+					{/each}
+				</button>
+				{#if onRemove}
+					<button
+						type="button"
+						onclick={() => onRemove(index)}
+						aria-label="Remove line"
+						class="shrink-0 rounded px-1.5 py-0.5 text-xs text-neutral-400 hover:bg-red-50 hover:text-red-600"
 					>
-						{word.text}
-					</span>
-					<!-- whitespace between words -->
-					{#if wordIndex < line.words.length - 1}<span> </span>{/if}
-				{/each}
-			</button>
+						×
+					</button>
+				{/if}
+			</div>
 		{/each}
 	</div>
 
 	<audio
 		bind:this={audio}
-		{src}
+		src={src || undefined}
 		preload="metadata"
 		onplay={() => (playing = true)}
 		onpause={() => (playing = false)}

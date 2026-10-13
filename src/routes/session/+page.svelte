@@ -358,41 +358,25 @@
 		}
 	}
 
-	function medianLineBpm(): number {
-		const bpms: number[] = [];
-		for (const entry of entries) {
-			if (entry.status !== 'done') continue;
-			for (const line of entry.lyrics) bpms.push(Number(line.bpm) || 0);
-		}
-		const usable = bpms.filter((value) => value > 20).sort((a, b) => a - b);
-		if (!usable.length) return 120;
-		return Math.round(usable[Math.floor(usable.length / 2)]);
-	}
-
-	async function copyJournalToScrapbook() {
+	async function copyEntryToScrapbook(entry: Entry) {
 		const url = api.url;
-		if (!url || !sessionId) return;
+		if (!url || !entry.serverId || entry.status !== 'done') return;
+		const lines: LineRef[] = entry.lyrics.map((_line, lineIndex) => ({
+			session_id: sessionId,
+			take_id: entry.serverId as string,
+			line_index: lineIndex
+		}));
+		if (!lines.length) return;
+
+		if (scrapbook && activeScrapbookId) {
+			await saveScrapbook({ lines: [...scrapbook.lines, ...lines] });
+			return;
+		}
+
 		scrapbookBusy = true;
 		scrapbookError = null;
 		try {
-			const lines: LineRef[] = [];
-			const ordered = [...entries].sort((a, b) => a.index - b.index);
-			for (const entry of ordered) {
-				if (entry.status === 'done' && entry.serverId) {
-					entry.lyrics.forEach((_line, lineIndex) => {
-						lines.push({
-							session_id: sessionId,
-							take_id: entry.serverId as string,
-							line_index: lineIndex
-						});
-					});
-				}
-			}
-			const created = await createScrapbook(url, {
-				name: `${sessionName || 'Journal'} mix`,
-				bpm: medianLineBpm(),
-				lines
-			});
+			const created = await createScrapbook(url, { name: entry.name, lines });
 			await refreshScrapbooks(url);
 			await selectScrapbook(created.scrapbook_id);
 		} catch (createError) {
@@ -408,7 +392,7 @@
 		if (!url) return;
 		scrapbookBusy = true;
 		try {
-			const created = await createScrapbook(url, { name: newEntryName(), bpm: 120, lines: [] });
+			const created = await createScrapbook(url, { name: newEntryName(), lines: [] });
 			await refreshScrapbooks(url);
 			await selectScrapbook(created.scrapbook_id);
 		} catch (createError) {
@@ -494,21 +478,8 @@
 		addLineAt(JSON.parse(payload) as LineRef);
 	}
 
-	function onRowDrop(event: DragEvent, index: number) {
-		event.preventDefault();
-		event.stopPropagation();
-		const move = event.dataTransfer?.getData('application/x-catchy-move');
-		const payload = event.dataTransfer?.getData('application/x-catchy-line');
-		if (move) {
-			moveLine(Number(move), index);
-			return;
-		}
-		if (payload) addLineAt(JSON.parse(payload) as LineRef, index);
-	}
-
-	function onRowDragStart(event: DragEvent, index: number) {
-		event.dataTransfer?.setData('application/x-catchy-move', String(index));
-		if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+	function scrapbookDropLine(payload: string, index: number) {
+		addLineAt(JSON.parse(payload) as LineRef, index);
 	}
 
 	function lineLabel(ref: LineRef): string {
@@ -521,8 +492,25 @@
 		return text || `Line ${ref.line_index + 1}`;
 	}
 
+	/** Rendered lines when available, otherwise plain text bubbles for editing. */
+	function scrapbookLinesFor(): LyricLine[] {
+		const book = scrapbook;
+		if (!book) return [];
+		if (book.render?.timeline?.length) return book.render.timeline;
+		return book.lines.map((ref) => ({
+			bpm: book.bpm,
+			'start time': 0,
+			'end time': 0,
+			words: [{ word: lineLabel(ref), start: 0, end: 0, length: 0 }]
+		}));
+	}
+
+	let scrapbookLines = $derived(scrapbookLinesFor());
+
 	let scrapbookSrc = $derived(
-		api.url && activeScrapbookId ? scrapbookAudioUrl(api.url, activeScrapbookId) : ''
+		api.url && activeScrapbookId && scrapbook?.render
+			? `${scrapbookAudioUrl(api.url, activeScrapbookId)}?v=${encodeURIComponent(scrapbook.render.rendered_at ?? '')}`
+			: ''
 	);
 </script>
 
@@ -619,22 +607,13 @@
 				<section class="order-2 flex flex-col gap-3 lg:order-1">
 					<div class="flex items-center justify-between gap-2">
 						<h2 class="text-xs font-medium tracking-wide text-neutral-500 uppercase">Scrapbook</h2>
-						<div class="flex items-center gap-2">
-							<button
-								onclick={newScrapbook}
-								disabled={scrapbookBusy}
-								class="rounded-md px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100 disabled:opacity-50"
-							>
-								New
-							</button>
-							<button
-								onclick={copyJournalToScrapbook}
-								disabled={scrapbookBusy}
-								class="rounded-md px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100 disabled:opacity-50"
-							>
-								Copy journal here
-							</button>
-						</div>
+						<button
+							onclick={newScrapbook}
+							disabled={scrapbookBusy}
+							class="rounded-md px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100 disabled:opacity-50"
+						>
+							New
+						</button>
 					</div>
 
 					<select
@@ -672,6 +651,11 @@
 										saveScrapbook({ bpm: Number((event.currentTarget as HTMLInputElement).value) })}
 									class="w-16 rounded-lg border border-neutral-300 bg-white px-2 py-1.5 text-sm"
 								/>
+								{#if !scrapbook.bpm_manual}
+									<span class="text-[10px] text-neutral-400" title="Median of the lines' BPMs"
+										>auto</span
+									>
+								{/if}
 							</label>
 							<button
 								onclick={removeScrapbook}
@@ -681,62 +665,44 @@
 							</button>
 						</div>
 
-						<!-- Drop zone / lines -->
-						<div
-							role="list"
-							aria-label="Scrapbook lines"
-							class="min-h-40 flex-1 space-y-1.5 rounded-xl border-2 border-dashed px-3 py-3 transition-colors {dragOverScrapbook
-								? 'border-neutral-900 bg-neutral-50'
-								: 'border-neutral-200 bg-neutral-50/50'}"
-							ondragover={(event) => {
-								event.preventDefault();
-								dragOverScrapbook = true;
-							}}
-							ondragleave={() => (dragOverScrapbook = false)}
-							ondrop={onScrapbookDrop}
-						>
-							{#if scrapbook.lines.length === 0}
-								<p class="py-6 text-center text-xs text-neutral-400">
-									Drag lines here from the journal, or press “Copy journal here”.
-								</p>
-							{:else}
-								{#each scrapbook.lines as line, index (index)}
-									<div
-										draggable="true"
-										role="listitem"
-										ondragstart={(event) => onRowDragStart(event, index)}
-										ondragover={(event) => event.preventDefault()}
-										ondrop={(event) => onRowDrop(event, index)}
-										class="flex items-center gap-2 rounded-lg border border-neutral-200 bg-white px-2.5 py-1.5"
-									>
-										<span class="cursor-grab text-neutral-300 select-none" aria-hidden="true"
-											>⋮⋮</span
-										>
-										<span class="min-w-0 flex-1 truncate text-sm text-neutral-700"
-											>{lineLabel(line)}</span
-										>
-										<button
-											onclick={() => removeLineAt(index)}
-											class="shrink-0 rounded px-1.5 py-0.5 text-xs text-neutral-400 hover:bg-red-50 hover:text-red-600"
-										>
-											×
-										</button>
-									</div>
-								{/each}
-							{/if}
-						</div>
-
-						{#if scrapbookBusy}
-							<p class="text-xs text-neutral-400">Rendering…</p>
-						{:else if scrapbook.render?.timeline?.length}
-							<EntryPlayer src={scrapbookSrc} lyrics={scrapbook.render.timeline} />
-						{:else if scrapbook.lines.length}
-							<button
-								onclick={renderActive}
-								class="rounded-lg bg-neutral-900 px-3 py-2 text-sm font-medium text-white hover:bg-neutral-800"
+						<!-- Lines live in the player: drag to add/reorder, × to remove -->
+						{#if scrapbook.lines.length === 0}
+							<div
+								role="list"
+								aria-label="Scrapbook lines"
+								class="min-h-40 rounded-xl border-2 border-dashed px-3 py-3 transition-colors {dragOverScrapbook
+									? 'border-neutral-900 bg-neutral-50'
+									: 'border-neutral-200 bg-neutral-50/50'}"
+								ondragover={(event) => {
+									event.preventDefault();
+									dragOverScrapbook = true;
+								}}
+								ondragleave={() => (dragOverScrapbook = false)}
+								ondrop={onScrapbookDrop}
 							>
-								Render mix
-							</button>
+								<p class="py-6 text-center text-xs text-neutral-400">
+									Drag lines here from a journal entry, or use that entry's “To scrapbook”.
+								</p>
+							</div>
+						{:else}
+							<EntryPlayer
+								src={scrapbookSrc}
+								lyrics={scrapbookLines}
+								allowReorder
+								onDropLine={scrapbookDropLine}
+								onReorder={moveLine}
+								onRemove={removeLineAt}
+							/>
+							{#if !scrapbook.render?.timeline?.length && !scrapbookBusy}
+								<button
+									onclick={renderActive}
+									class="self-start rounded-lg bg-neutral-900 px-3 py-2 text-sm font-medium text-white hover:bg-neutral-800"
+								>
+									Render mix
+								</button>
+							{:else if scrapbookBusy}
+								<p class="text-xs text-neutral-400">Rendering…</p>
+							{/if}
 						{/if}
 					{/if}
 				</section>
@@ -844,6 +810,15 @@
 												>
 													Process
 												</button>
+											{:else if entry.status === 'done'}
+												<button
+													onclick={() => copyEntryToScrapbook(entry)}
+													disabled={scrapbookBusy}
+													title="Copy this entry's lines to a scrapbook"
+													class="rounded-md px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100 disabled:opacity-50"
+												>
+													To scrapbook
+												</button>
 											{/if}
 											<button
 												onclick={() => removeEntry(entry)}
@@ -862,7 +837,7 @@
 										<EntryPlayer
 											src={entryAudio(entry)}
 											lyrics={entry.lyrics}
-											dragLine={(lineIndex) => journalLinePayload(entry, lineIndex)}
+											dragPayload={(lineIndex: number) => journalLinePayload(entry, lineIndex)}
 										/>
 									{:else if entryAudio(entry)}
 										<audio controls src={entryAudio(entry)} class="w-full"></audio>
