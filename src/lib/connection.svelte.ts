@@ -591,8 +591,12 @@ export type Scrapbook = ScrapbookSummary & {
 	render: ScrapbookRender | null;
 };
 
-export async function listScrapbooks(url: string): Promise<ScrapbookSummary[]> {
-	const response = await fetch(`${base(url)}/scrapbooks`, {
+function scrapbookBase(url: string, sessionId: string): string {
+	return `${base(url)}/sessions/${encodeURIComponent(sessionId)}/scrapbooks`;
+}
+
+export async function listScrapbooks(url: string, sessionId: string): Promise<ScrapbookSummary[]> {
+	const response = await fetch(scrapbookBase(url, sessionId), {
 		headers: { accept: 'application/json' }
 	});
 	if (!response.ok) {
@@ -603,10 +607,17 @@ export async function listScrapbooks(url: string): Promise<ScrapbookSummary[]> {
 	return body.scrapbooks as ScrapbookSummary[];
 }
 
-export async function getScrapbook(url: string, scrapbookId: string): Promise<Scrapbook> {
-	const response = await fetch(`${base(url)}/scrapbooks/${encodeURIComponent(scrapbookId)}`, {
-		headers: { accept: 'application/json' }
-	});
+export async function getScrapbook(
+	url: string,
+	sessionId: string,
+	scrapbookId: string
+): Promise<Scrapbook> {
+	const response = await fetch(
+		`${scrapbookBase(url, sessionId)}/${encodeURIComponent(scrapbookId)}`,
+		{
+			headers: { accept: 'application/json' }
+		}
+	);
 	if (!response.ok) {
 		throw new Error(`The server answered ${response.status} when loading the scrapbook.`);
 	}
@@ -615,9 +626,10 @@ export async function getScrapbook(url: string, scrapbookId: string): Promise<Sc
 
 export async function createScrapbook(
 	url: string,
+	sessionId: string,
 	body: { name: string; lines: LineRef[] }
 ): Promise<ScrapbookSummary> {
-	const response = await fetch(`${base(url)}/scrapbooks`, {
+	const response = await fetch(scrapbookBase(url, sessionId), {
 		method: 'POST',
 		headers: { 'content-type': 'application/json', accept: 'application/json' },
 		body: JSON.stringify(body)
@@ -630,34 +642,49 @@ export async function createScrapbook(
 
 export async function updateScrapbook(
 	url: string,
+	sessionId: string,
 	scrapbookId: string,
 	body: { name?: string; lines?: LineRef[] }
 ): Promise<Scrapbook> {
-	const response = await fetch(`${base(url)}/scrapbooks/${encodeURIComponent(scrapbookId)}`, {
-		method: 'PATCH',
-		headers: { 'content-type': 'application/json', accept: 'application/json' },
-		body: JSON.stringify(body)
-	});
+	const response = await fetch(
+		`${scrapbookBase(url, sessionId)}/${encodeURIComponent(scrapbookId)}`,
+		{
+			method: 'PATCH',
+			headers: { 'content-type': 'application/json', accept: 'application/json' },
+			body: JSON.stringify(body)
+		}
+	);
 	if (!response.ok) {
 		throw new Error(`The server answered ${response.status} when saving the scrapbook.`);
 	}
 	return (await response.json()) as Scrapbook;
 }
 
-export async function deleteScrapbook(url: string, scrapbookId: string): Promise<void> {
-	const response = await fetch(`${base(url)}/scrapbooks/${encodeURIComponent(scrapbookId)}`, {
-		method: 'DELETE',
-		headers: { accept: 'application/json' }
-	});
+export async function deleteScrapbook(
+	url: string,
+	sessionId: string,
+	scrapbookId: string
+): Promise<void> {
+	const response = await fetch(
+		`${scrapbookBase(url, sessionId)}/${encodeURIComponent(scrapbookId)}`,
+		{
+			method: 'DELETE',
+			headers: { accept: 'application/json' }
+		}
+	);
 	if (!response.ok) {
 		throw new Error(`The server answered ${response.status} when deleting the scrapbook.`);
 	}
 }
 
 /** Render (or fetch the cached) tempo-matched mix for a scrapbook. */
-export async function renderScrapbook(url: string, scrapbookId: string): Promise<ScrapbookRender> {
+export async function renderScrapbook(
+	url: string,
+	sessionId: string,
+	scrapbookId: string
+): Promise<ScrapbookRender> {
 	const response = await fetch(
-		`${base(url)}/scrapbooks/${encodeURIComponent(scrapbookId)}/render`,
+		`${scrapbookBase(url, sessionId)}/${encodeURIComponent(scrapbookId)}/render`,
 		{ method: 'POST', headers: { accept: 'application/json' } }
 	);
 	if (!response.ok) {
@@ -667,8 +694,8 @@ export async function renderScrapbook(url: string, scrapbookId: string): Promise
 }
 
 /** A playable url for a scrapbook's rendered mix. */
-export function scrapbookAudioUrl(url: string, scrapbookId: string): string {
-	return `${base(url)}/scrapbooks/${encodeURIComponent(scrapbookId)}/audio`;
+export function scrapbookAudioUrl(url: string, sessionId: string, scrapbookId: string): string {
+	return `${scrapbookBase(url, sessionId)}/${encodeURIComponent(scrapbookId)}/audio`;
 }
 
 /** A finished take's result, or null when it has not produced one. */

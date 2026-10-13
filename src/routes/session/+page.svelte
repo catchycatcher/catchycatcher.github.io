@@ -134,6 +134,10 @@
 		const id = sessionId;
 		if (!url || !id || loadedFor === id) return;
 		loadedFor = id;
+		// Scrapbooks belong to the session, so drop the previous session's.
+		activeScrapbookId = '';
+		scrapbook = null;
+		scrapbooks = [];
 		void loadSession(url, id);
 		void refreshScrapbooks(url);
 	});
@@ -507,7 +511,7 @@
 
 	async function refreshScrapbooks(url: string) {
 		try {
-			scrapbooks = await listScrapbooks(url);
+			scrapbooks = await listScrapbooks(url, sessionId);
 			if (scrapbooks.length === 0) {
 				// There is always an open scrapbook: make an empty one to start.
 				await ensureScrapbook(url);
@@ -526,7 +530,7 @@
 		if (autoCreateInFlight) return;
 		autoCreateInFlight = true;
 		try {
-			const created = await createScrapbook(url, { name: newEntryName(), lines: [] });
+			const created = await createScrapbook(url, sessionId, { name: newEntryName(), lines: [] });
 			scrapbooks = [created, ...scrapbooks];
 			await selectScrapbook(created.scrapbook_id);
 		} catch (createError) {
@@ -581,7 +585,7 @@
 		scrapbookError = null;
 		if (!url || !id) return;
 		try {
-			scrapbook = await getScrapbook(url, id);
+			scrapbook = await getScrapbook(url, sessionId, id);
 			if (scrapbook.lines.length) await renderActive();
 		} catch (loadError) {
 			scrapbookError =
@@ -613,7 +617,7 @@
 		scrapbookBusy = true;
 		scrapbookError = null;
 		try {
-			const created = await createScrapbook(url, { name, lines });
+			const created = await createScrapbook(url, sessionId, { name, lines });
 			await refreshScrapbooks(url);
 			await selectScrapbook(created.scrapbook_id);
 		} catch (createError) {
@@ -639,7 +643,7 @@
 		if (!url) return;
 		scrapbookBusy = true;
 		try {
-			const created = await createScrapbook(url, { name: newEntryName(), lines: [] });
+			const created = await createScrapbook(url, sessionId, { name: newEntryName(), lines: [] });
 			await refreshScrapbooks(url);
 			await selectScrapbook(created.scrapbook_id);
 		} catch (createError) {
@@ -654,7 +658,7 @@
 		const url = api.url;
 		if (!url || !activeScrapbookId) return;
 		try {
-			await deleteScrapbook(url, activeScrapbookId);
+			await deleteScrapbook(url, sessionId, activeScrapbookId);
 			activeScrapbookId = '';
 			scrapbook = null;
 			await refreshScrapbooks(url);
@@ -680,7 +684,7 @@
 		}
 
 		try {
-			scrapbook = await updateScrapbook(url, activeScrapbookId, body);
+			scrapbook = await updateScrapbook(url, sessionId, activeScrapbookId, body);
 			await refreshScrapbooks(url);
 			await renderActive();
 		} catch (saveError) {
@@ -700,7 +704,7 @@
 		scrapbookBusy = true;
 		renderPending = true;
 		try {
-			const render = await renderScrapbook(url, activeScrapbookId);
+			const render = await renderScrapbook(url, sessionId, activeScrapbookId);
 			if (scrapbook) scrapbook = { ...scrapbook, render, rendered: true };
 		} catch (renderError) {
 			scrapbookError = renderError instanceof Error ? renderError.message : 'Could not render.';
@@ -914,7 +918,7 @@
 
 	let scrapbookSrc = $derived(
 		api.url && activeScrapbookId && scrapbook?.render && renderInSync
-			? `${scrapbookAudioUrl(api.url, activeScrapbookId)}?v=${encodeURIComponent(scrapbook.render.rendered_at ?? '')}`
+			? `${scrapbookAudioUrl(api.url, sessionId, activeScrapbookId)}?v=${encodeURIComponent(scrapbook.render.rendered_at ?? '')}`
 			: ''
 	);
 </script>
