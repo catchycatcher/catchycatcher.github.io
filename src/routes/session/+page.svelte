@@ -5,14 +5,25 @@
 	import {
 		bootstrap,
 		connection,
+		createScrapbook,
+		deleteScrapbook,
 		deleteTake,
+		getScrapbook,
 		getSession,
 		getTakeResult,
+		listScrapbooks,
 		processTake,
+		renderScrapbook,
 		renameTake,
+		scrapbookAudioUrl,
+		setBookmark,
 		takeAudioUrl,
+		updateScrapbook,
 		uploadTake,
+		type LineRef,
 		type LyricLine,
+		type Scrapbook,
+		type ScrapbookSummary,
 		type TakeMeta
 	} from '#lib/connection.svelte.ts';
 	import { newEntryName } from '#lib/session.ts';
@@ -26,6 +37,7 @@
 		serverId: string | null;
 		index: number;
 		name: string;
+		bookmarked: boolean;
 		status: EntryStatus;
 		lyrics: LyricLine[];
 		error?: string | null;
@@ -40,38 +52,40 @@
 	/** The journal: one entry per take, newest first. */
 	let entries = $state<Entry[]>([]);
 	let nextIndex = $state(1);
+	let tab = $state<'all' | 'bookmarked'>('all');
 
-	/** Inline rename state (which entry is being renamed and the draft name). */
+	/** Inline rename state. */
 	let editingId = $state<string | null>(null);
 	let nameDraft = $state('');
 
-	const recorder = new Recorder();
+	/** Scrapbooks. */
+	let scrapbooks = $state<ScrapbookSummary[]>([]);
+	let activeScrapbookId = $state('');
+	let scrapbook = $state<Scrapbook | null>(null);
+	let scrapbookBusy = $state(false);
+	let scrapbookError = $state<string | null>(null);
+	let dragOverScrapbook = $state(false);
 
-	/** When the current segment (audio since the last key) began. */
+	const recorder = new Recorder();
 	let segmentStartedAt = $state(0);
 	let elapsed = $state(0);
-
-	/** Guards the load effect so a session is fetched only once per id. */
 	let loadedFor = '';
 
-	// Effects never run on the server, so this reads the url in the browser and
-	// also restores the saved server connection on a direct visit / refresh.
 	$effect(() => {
 		bootstrap(page.url.searchParams);
 		sessionId = page.url.searchParams.get('id') ?? '';
 		ready = true;
 	});
 
-	// Once we have a server and a session id, pull the name and journal.
 	$effect(() => {
 		const url = api.url;
 		const id = sessionId;
 		if (!url || !id || loadedFor === id) return;
 		loadedFor = id;
 		void loadSession(url, id);
+		void refreshScrapbooks(url);
 	});
 
-	// The current segment's clock (it resets every time a key commits/scraps).
 	$effect(() => {
 		if (!recorder.recording || segmentStartedAt <= 0) {
 			elapsed = 0;
@@ -84,7 +98,6 @@
 		return () => clearInterval(timer);
 	});
 
-	// Keyboard workflow + microphone cleanup for the lifetime of the page.
 	$effect(() => {
 		const onUnload = () => recorder.stop();
 		window.addEventListener('keydown', onKeydown);
@@ -96,30 +109,38 @@
 		};
 	});
 
+	let visibleEntries = $derived(
+		tab === 'bookmarked' ? entries.filter((entry) => entry.bookmarked) : entries
+	);
+	let pageTitle = $derived(sessionName ? `${sessionName} — Catchy Catcher` : 'Catchy Catcher');
+
 	function normalizeStatus(status: string | undefined): EntryStatus {
 		if (status === 'done' || status === 'processing' || status === 'error') return status;
 		return 'recorded';
+	}
+
+	function updateEntry(localId: string, patch: Partial<Entry>) {
+		entries = entries.map((entry) => (entry.localId === localId ? { ...entry, ...patch } : entry));
 	}
 
 	async function loadSession(url: string, id: string) {
 		try {
 			const session = await getSession(url, id);
 			sessionName = session.name;
-
 			const loaded: Entry[] = session.takes.map((take: TakeMeta) => ({
 				localId: take.take_id,
 				serverId: take.take_id,
 				index: take.index,
 				name: take.name?.trim() || take.take_id,
+				bookmarked: Boolean(take.bookmarked),
 				status: normalizeStatus(take.status),
 				lyrics: []
 			}));
 			loaded.sort((a, b) => b.index - a.index);
 			entries = loaded;
-			nextIndex = (loaded[loaded.length - 1]?.index ?? 0) + 1;
+			nextIndex = loaded.reduce((max, entry) => Math.max(max, entry.index), 0) + 1;
 			error = null;
 
-			// Load the lyrics for entries that were already processed.
 			for (const entry of loaded) {
 				if (entry.status === 'done' && entry.serverId) {
 					const result = await getTakeResult(url, id, entry.serverId);
@@ -131,16 +152,13 @@
 		}
 	}
 
-	function updateEntry(localId: string, patch: Partial<Entry>) {
-		entries = entries.map((entry) => (entry.localId === localId ? { ...entry, ...patch } : entry));
-	}
+	// --- Recording ---------------------------------------------------------
 
 	async function startRecording() {
 		await recorder.start();
 		if (recorder.recording) segmentStartedAt = performance.now();
 	}
 
-	/** Commit the audio since the last key as a journal entry. */
 	async function commit(process: boolean) {
 		const url = api.url;
 		if (!url || !sessionId || !recorder.recording) return;
@@ -158,6 +176,7 @@
 				serverId: null,
 				index,
 				name,
+				bookmarked: false,
 				status: process ? 'processing' : 'recorded',
 				lyrics: [],
 				error: null
@@ -165,8 +184,7 @@
 			...entries
 		];
 
-		const extension = extensionForMime(blob.type);
-		const file = new File([blob], `entry-${index}.${extension}`, {
+		const file = new File([blob], `entry-${index}.${extensionForMime(blob.type)}`, {
 			type: blob.type || 'audio/webm'
 		});
 
@@ -185,12 +203,44 @@
 		}
 	}
 
-	/** Scrap the audio recorded since the last key and carry on recording. */
 	async function scrapCurrent() {
 		if (!recorder.recording) return;
 		await recorder.discardSegment();
 		segmentStartedAt = performance.now();
 	}
+
+	function onKeydown(event: KeyboardEvent) {
+		if (event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
+		const target = event.target as HTMLElement | null;
+		if (
+			target &&
+			(target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+		) {
+			return;
+		}
+		if (event.key === ' ' || event.key === 'Spacebar') {
+			event.preventDefault();
+			if (recorder.recording) void commit(true);
+			else void startRecording();
+			return;
+		}
+		if (event.key === 'Enter' && recorder.recording) {
+			event.preventDefault();
+			void commit(false);
+			return;
+		}
+		if ((event.key === 'Backspace' || event.key === 'Delete') && recorder.recording) {
+			event.preventDefault();
+			void scrapCurrent();
+		}
+	}
+
+	function formatElapsed(seconds: number): string {
+		const whole = Math.floor(seconds);
+		return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
+	}
+
+	// --- Journal entries ---------------------------------------------------
 
 	async function processEntry(entry: Entry) {
 		const url = api.url;
@@ -204,6 +254,31 @@
 				status: 'error',
 				error: processError instanceof Error ? processError.message : 'Could not process the take.'
 			});
+		}
+	}
+
+	async function removeEntry(entry: Entry) {
+		const url = api.url;
+		if (!url || !entry.serverId) return;
+		try {
+			await deleteTake(url, sessionId, entry.serverId);
+			entries = entries.filter((candidate) => candidate.localId !== entry.localId);
+		} catch (deleteError) {
+			error = deleteError instanceof Error ? deleteError.message : 'Could not delete the entry.';
+		}
+	}
+
+	async function toggleBookmark(entry: Entry) {
+		const url = api.url;
+		if (!url || !entry.serverId) return;
+		const next = !entry.bookmarked;
+		updateEntry(entry.localId, { bookmarked: next });
+		try {
+			await setBookmark(url, sessionId, entry.serverId, next);
+		} catch (bookmarkError) {
+			updateEntry(entry.localId, { bookmarked: !next });
+			error =
+				bookmarkError instanceof Error ? bookmarkError.message : 'Could not save the bookmark.';
 		}
 	}
 
@@ -224,26 +299,16 @@
 		if (!id || !name) return;
 		const entry = entries.find((candidate) => candidate.localId === id);
 		cancelRename();
-		if (!entry || !entry.serverId || entry.name === name) {
-			if (entry && !entry.serverId) updateEntry(id, { name });
+		if (!entry) return;
+		if (!entry.serverId) {
+			updateEntry(id, { name });
 			return;
 		}
-		updateEntry(id, { name });
+		if (entry.name !== name) updateEntry(id, { name });
 		try {
 			await renameTake(api.url as string, sessionId, entry.serverId, name);
 		} catch (renameError) {
-			error = renameError instanceof Error ? renameError.message : 'Could not rename the entry.';
-		}
-	}
-
-	async function removeEntry(entry: Entry) {
-		const url = api.url;
-		if (!url || !entry.serverId) return;
-		try {
-			await deleteTake(url, sessionId, entry.serverId);
-			entries = entries.filter((candidate) => candidate.localId !== entry.localId);
-		} catch (deleteError) {
-			error = deleteError instanceof Error ? deleteError.message : 'Could not delete the entry.';
+			error = renameError instanceof Error ? renameError.message : 'Could not rename.';
 		}
 	}
 
@@ -258,44 +323,207 @@
 		);
 	}
 
-	function onKeydown(event: KeyboardEvent) {
-		if (event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
-		const target = event.target as HTMLElement | null;
-		if (
-			target &&
-			(target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
-		) {
-			return;
-		}
+	function journalLinePayload(entry: Entry, lineIndex: number): string | null {
+		if (!entry.serverId || entry.status !== 'done') return null;
+		return JSON.stringify({
+			session_id: sessionId,
+			take_id: entry.serverId,
+			line_index: lineIndex
+		} satisfies LineRef);
+	}
 
-		if (event.key === ' ' || event.key === 'Spacebar') {
-			event.preventDefault();
-			if (recorder.recording) void commit(true);
-			else void startRecording();
-			return;
-		}
-		if (event.key === 'Enter') {
-			if (recorder.recording) {
-				event.preventDefault();
-				void commit(false);
-			}
-			return;
-		}
-		if (event.key === 'Backspace' || event.key === 'Delete') {
-			if (recorder.recording) {
-				event.preventDefault();
-				void scrapCurrent();
-			}
+	// --- Scrapbooks --------------------------------------------------------
+
+	async function refreshScrapbooks(url: string) {
+		try {
+			scrapbooks = await listScrapbooks(url);
+		} catch (listError) {
+			scrapbookError =
+				listError instanceof Error ? listError.message : 'Could not load scrapbooks.';
 		}
 	}
 
-	function formatElapsed(seconds: number): string {
-		const whole = Math.floor(seconds);
-		const minutes = Math.floor(whole / 60);
-		return `${minutes}:${String(whole % 60).padStart(2, '0')}`;
+	async function selectScrapbook(id: string) {
+		const url = api.url;
+		activeScrapbookId = id;
+		scrapbook = null;
+		scrapbookError = null;
+		if (!url || !id) return;
+		try {
+			scrapbook = await getScrapbook(url, id);
+			if (scrapbook.lines.length) await renderActive();
+		} catch (loadError) {
+			scrapbookError =
+				loadError instanceof Error ? loadError.message : 'Could not load the scrapbook.';
+		}
 	}
 
-	let pageTitle = $derived(sessionName ? `${sessionName} — Catchy Catcher` : 'Catchy Catcher');
+	function medianLineBpm(): number {
+		const bpms: number[] = [];
+		for (const entry of entries) {
+			if (entry.status !== 'done') continue;
+			for (const line of entry.lyrics) bpms.push(Number(line.bpm) || 0);
+		}
+		const usable = bpms.filter((value) => value > 20).sort((a, b) => a - b);
+		if (!usable.length) return 120;
+		return Math.round(usable[Math.floor(usable.length / 2)]);
+	}
+
+	async function copyJournalToScrapbook() {
+		const url = api.url;
+		if (!url || !sessionId) return;
+		scrapbookBusy = true;
+		scrapbookError = null;
+		try {
+			const lines: LineRef[] = [];
+			const ordered = [...entries].sort((a, b) => a.index - b.index);
+			for (const entry of ordered) {
+				if (entry.status === 'done' && entry.serverId) {
+					entry.lyrics.forEach((_line, lineIndex) => {
+						lines.push({
+							session_id: sessionId,
+							take_id: entry.serverId as string,
+							line_index: lineIndex
+						});
+					});
+				}
+			}
+			const created = await createScrapbook(url, {
+				name: `${sessionName || 'Journal'} mix`,
+				bpm: medianLineBpm(),
+				lines
+			});
+			await refreshScrapbooks(url);
+			await selectScrapbook(created.scrapbook_id);
+		} catch (createError) {
+			scrapbookError =
+				createError instanceof Error ? createError.message : 'Could not create the scrapbook.';
+		} finally {
+			scrapbookBusy = false;
+		}
+	}
+
+	async function newScrapbook() {
+		const url = api.url;
+		if (!url) return;
+		scrapbookBusy = true;
+		try {
+			const created = await createScrapbook(url, { name: newEntryName(), bpm: 120, lines: [] });
+			await refreshScrapbooks(url);
+			await selectScrapbook(created.scrapbook_id);
+		} catch (createError) {
+			scrapbookError =
+				createError instanceof Error ? createError.message : 'Could not create the scrapbook.';
+		} finally {
+			scrapbookBusy = false;
+		}
+	}
+
+	async function removeScrapbook() {
+		const url = api.url;
+		if (!url || !activeScrapbookId) return;
+		try {
+			await deleteScrapbook(url, activeScrapbookId);
+			activeScrapbookId = '';
+			scrapbook = null;
+			await refreshScrapbooks(url);
+		} catch (deleteError) {
+			scrapbookError = deleteError instanceof Error ? deleteError.message : 'Could not delete.';
+		}
+	}
+
+	async function saveScrapbook(body: { name?: string; bpm?: number; lines?: LineRef[] }) {
+		const url = api.url;
+		if (!url || !activeScrapbookId) return;
+		scrapbookBusy = true;
+		scrapbookError = null;
+		try {
+			scrapbook = await updateScrapbook(url, activeScrapbookId, body);
+			await refreshScrapbooks(url);
+			await renderActive();
+		} catch (saveError) {
+			scrapbookError = saveError instanceof Error ? saveError.message : 'Could not save.';
+		} finally {
+			scrapbookBusy = false;
+		}
+	}
+
+	async function renderActive() {
+		const url = api.url;
+		if (!url || !activeScrapbookId || !scrapbook?.lines.length) return;
+		scrapbookBusy = true;
+		try {
+			const render = await renderScrapbook(url, activeScrapbookId);
+			if (scrapbook) scrapbook = { ...scrapbook, render, rendered: true };
+		} catch (renderError) {
+			scrapbookError = renderError instanceof Error ? renderError.message : 'Could not render.';
+		} finally {
+			scrapbookBusy = false;
+		}
+	}
+
+	function linesWith(insert: LineRef | null, at?: number, remove?: number): LineRef[] {
+		const current = scrapbook ? [...scrapbook.lines] : [];
+		if (remove !== undefined) current.splice(remove, 1);
+		if (insert) current.splice(at ?? current.length, 0, insert);
+		return current;
+	}
+
+	function addLineAt(ref: LineRef, at?: number) {
+		void saveScrapbook({ lines: linesWith(ref, at) });
+	}
+
+	function removeLineAt(index: number) {
+		void saveScrapbook({ lines: linesWith(null, undefined, index) });
+	}
+
+	function moveLine(from: number, to: number) {
+		if (from === to) return;
+		const current = scrapbook ? [...scrapbook.lines] : [];
+		if (from < 0 || from >= current.length) return;
+		const [moved] = current.splice(from, 1);
+		current.splice(Math.max(0, Math.min(current.length, to)), 0, moved);
+		void saveScrapbook({ lines: current });
+	}
+
+	function onScrapbookDrop(event: DragEvent) {
+		event.preventDefault();
+		dragOverScrapbook = false;
+		const payload = event.dataTransfer?.getData('application/x-catchy-line');
+		if (!payload) return;
+		addLineAt(JSON.parse(payload) as LineRef);
+	}
+
+	function onRowDrop(event: DragEvent, index: number) {
+		event.preventDefault();
+		event.stopPropagation();
+		const move = event.dataTransfer?.getData('application/x-catchy-move');
+		const payload = event.dataTransfer?.getData('application/x-catchy-line');
+		if (move) {
+			moveLine(Number(move), index);
+			return;
+		}
+		if (payload) addLineAt(JSON.parse(payload) as LineRef, index);
+	}
+
+	function onRowDragStart(event: DragEvent, index: number) {
+		event.dataTransfer?.setData('application/x-catchy-move', String(index));
+		if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+	}
+
+	function lineLabel(ref: LineRef): string {
+		const entry = entries.find((candidate) => candidate.serverId === ref.take_id);
+		const line = entry?.lyrics[ref.line_index];
+		const text = line?.words
+			.map((word) => word.word)
+			.join(' ')
+			.trim();
+		return text || `Line ${ref.line_index + 1}`;
+	}
+
+	let scrapbookSrc = $derived(
+		api.url && activeScrapbookId ? scrapbookAudioUrl(api.url, activeScrapbookId) : ''
+	);
 </script>
 
 <svelte:head>
@@ -304,7 +532,7 @@
 </svelte:head>
 
 <main class="flex min-h-dvh flex-col bg-white text-neutral-900">
-	<header class="flex items-start justify-between gap-4 border-b border-neutral-100 px-6 py-4">
+	<header class="flex items-start justify-between gap-4 border-b border-neutral-100 px-6 py-3">
 		<div class="min-w-0">
 			<a
 				href={resolve('/')}
@@ -319,13 +547,13 @@
 		</a>
 	</header>
 
-	<div class="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-8 px-6 py-8">
+	<div class="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-5 px-4 py-5 sm:px-6">
 		{#if !ready}
 			<p class="text-sm text-neutral-400">Loading…</p>
 		{:else if connection.status === 'checking'}
 			<p class="text-sm text-neutral-500">Connecting…</p>
 		{:else if !api.url}
-			<div class="space-y-3 text-center">
+			<div class="space-y-2 text-center">
 				<p class="text-sm text-neutral-500">Not connected to a processing server.</p>
 				<a href={resolve('/')} class="text-sm font-medium text-neutral-900 underline">
 					Connect with a share code
@@ -334,53 +562,51 @@
 		{:else if !sessionId}
 			<p class="text-sm text-neutral-500">No session selected.</p>
 		{:else}
+			<!-- Recorder bar -->
 			<section
-				class="flex flex-col items-center gap-3 rounded-2xl border border-neutral-200 bg-neutral-50 px-6 py-8 text-center"
+				class="flex flex-wrap items-center gap-3 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-2.5"
 			>
 				{#if recorder.state === 'error'}
 					<p class="text-sm text-red-600">{recorder.error}</p>
 					<button
 						onclick={startRecording}
-						class="rounded-lg bg-neutral-900 px-5 py-3 text-sm font-medium text-white hover:bg-neutral-800"
+						class="rounded-lg bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800"
 					>
 						Try again
 					</button>
 				{:else if recorder.recording}
-					<div class="flex items-center gap-2 text-red-600">
-						<span class="size-3 animate-pulse rounded-full bg-red-600"></span>
-						<span class="text-sm font-medium">Recording</span>
-						<span class="font-mono text-sm text-neutral-500">{formatElapsed(elapsed)}</span>
-					</div>
-					<p class="text-xs text-neutral-500">
-						<kbd class="rounded border border-neutral-300 bg-white px-1.5 py-0.5">Space</kbd> keep
+					<span class="size-2.5 animate-pulse rounded-full bg-red-600"></span>
+					<span class="text-sm font-medium">Recording</span>
+					<span class="font-mono text-sm text-neutral-500">{formatElapsed(elapsed)}</span>
+					<span class="ml-auto text-xs text-neutral-500">
+						<kbd class="rounded border border-neutral-300 bg-white px-1 py-0.5">Space</kbd> keep
 						&amp; process ·
-						<kbd class="rounded border border-neutral-300 bg-white px-1.5 py-0.5">Enter</kbd> keep
-						raw ·
-						<kbd class="rounded border border-neutral-300 bg-white px-1.5 py-0.5">Delete</kbd> scrap
-					</p>
+						<kbd class="rounded border border-neutral-300 bg-white px-1 py-0.5">Enter</kbd> keep raw
+						·
+						<kbd class="rounded border border-neutral-300 bg-white px-1 py-0.5">Delete</kbd> scrap
+					</span>
 					<button
 						onclick={() => recorder.stop()}
-						class="rounded-lg border border-neutral-300 px-5 py-2 text-sm text-neutral-700 hover:bg-neutral-100"
+						class="rounded-lg border border-neutral-300 px-3 py-1.5 text-sm text-neutral-700 hover:bg-neutral-100"
 					>
-						Stop recording
+						Stop
 					</button>
 				{:else}
 					<button
 						onclick={startRecording}
-						class="rounded-full bg-red-600 px-6 py-3 text-sm font-medium text-white hover:bg-red-700"
+						class="rounded-full bg-red-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-red-700"
 					>
 						Start recording
 					</button>
-					<p class="text-xs text-neutral-500">
-						Then sing and press <kbd
-							class="rounded border border-neutral-300 bg-white px-1.5 py-0.5">Space</kbd
+					<span class="text-xs text-neutral-500">
+						Sing, then <kbd class="rounded border border-neutral-300 bg-white px-1 py-0.5"
+							>Space</kbd
 						>
-						to keep &amp; process a phrase,
-						<kbd class="rounded border border-neutral-300 bg-white px-1.5 py-0.5">Enter</kbd>
-						to keep it raw, or
-						<kbd class="rounded border border-neutral-300 bg-white px-1.5 py-0.5">Delete</kbd> to scrap
-						it.
-					</p>
+						keeps &amp; processes a phrase,
+						<kbd class="rounded border border-neutral-300 bg-white px-1 py-0.5">Enter</kbd>
+						keeps it raw,
+						<kbd class="rounded border border-neutral-300 bg-white px-1 py-0.5">Delete</kbd> scraps it.
+					</span>
 				{/if}
 			</section>
 
@@ -388,100 +614,265 @@
 				<p class="text-center text-xs text-red-600">{error}</p>
 			{/if}
 
-			<section class="space-y-3">
-				<div class="flex items-center justify-between">
-					<h2 class="text-xs font-medium tracking-wide text-neutral-500 uppercase">Journal</h2>
-					<span class="text-xs text-neutral-400">{entries.length} entries</span>
-				</div>
+			<div class="grid flex-1 grid-cols-1 gap-5 lg:grid-cols-2">
+				<!-- Scrapbook (left) -->
+				<section class="order-2 flex flex-col gap-3 lg:order-1">
+					<div class="flex items-center justify-between gap-2">
+						<h2 class="text-xs font-medium tracking-wide text-neutral-500 uppercase">Scrapbook</h2>
+						<div class="flex items-center gap-2">
+							<button
+								onclick={newScrapbook}
+								disabled={scrapbookBusy}
+								class="rounded-md px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100 disabled:opacity-50"
+							>
+								New
+							</button>
+							<button
+								onclick={copyJournalToScrapbook}
+								disabled={scrapbookBusy}
+								class="rounded-md px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100 disabled:opacity-50"
+							>
+								Copy journal here
+							</button>
+						</div>
+					</div>
 
-				{#if entries.length === 0}
-					<p
-						class="rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-400"
+					<select
+						value={activeScrapbookId}
+						onchange={(event) => selectScrapbook((event.currentTarget as HTMLSelectElement).value)}
+						class="rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm"
 					>
-						Nothing yet — start recording and keep a phrase to fill your journal.
-					</p>
-				{:else}
-					<ul class="space-y-3">
-						{#each entries as entry (entry.localId)}
-							<li class="space-y-3 rounded-xl border border-neutral-200 bg-white px-4 py-3">
-								<div class="flex items-center justify-between gap-3">
-									<div class="flex min-w-0 flex-1 items-center gap-2">
-										<span class="font-mono text-xs text-neutral-400"
-											>{String(entry.index).padStart(2, '0')}</span
+						<option value="">Select a scrapbook…</option>
+						{#each scrapbooks as item (item.scrapbook_id)}
+							<option value={item.scrapbook_id}>{item.name} ({item.line_count})</option>
+						{/each}
+					</select>
+
+					{#if scrapbookError}
+						<p class="text-xs text-red-600">{scrapbookError}</p>
+					{/if}
+
+					{#if scrapbook}
+						<div class="flex items-center gap-2">
+							<input
+								value={scrapbook.name}
+								onchange={(event) =>
+									saveScrapbook({ name: (event.currentTarget as HTMLInputElement).value })}
+								aria-label="Scrapbook name"
+								class="min-w-0 flex-1 rounded-lg border border-neutral-300 bg-white px-3 py-1.5 text-sm"
+							/>
+							<label class="flex shrink-0 items-center gap-1 text-xs text-neutral-500">
+								BPM
+								<input
+									type="number"
+									min="20"
+									max="300"
+									value={scrapbook.bpm}
+									onchange={(event) =>
+										saveScrapbook({ bpm: Number((event.currentTarget as HTMLInputElement).value) })}
+									class="w-16 rounded-lg border border-neutral-300 bg-white px-2 py-1.5 text-sm"
+								/>
+							</label>
+							<button
+								onclick={removeScrapbook}
+								class="shrink-0 rounded-md px-2 py-1 text-xs text-neutral-500 hover:bg-red-50 hover:text-red-600"
+							>
+								Delete
+							</button>
+						</div>
+
+						<!-- Drop zone / lines -->
+						<div
+							role="list"
+							aria-label="Scrapbook lines"
+							class="min-h-40 flex-1 space-y-1.5 rounded-xl border-2 border-dashed px-3 py-3 transition-colors {dragOverScrapbook
+								? 'border-neutral-900 bg-neutral-50'
+								: 'border-neutral-200 bg-neutral-50/50'}"
+							ondragover={(event) => {
+								event.preventDefault();
+								dragOverScrapbook = true;
+							}}
+							ondragleave={() => (dragOverScrapbook = false)}
+							ondrop={onScrapbookDrop}
+						>
+							{#if scrapbook.lines.length === 0}
+								<p class="py-6 text-center text-xs text-neutral-400">
+									Drag lines here from the journal, or press “Copy journal here”.
+								</p>
+							{:else}
+								{#each scrapbook.lines as line, index (index)}
+									<div
+										draggable="true"
+										role="listitem"
+										ondragstart={(event) => onRowDragStart(event, index)}
+										ondragover={(event) => event.preventDefault()}
+										ondrop={(event) => onRowDrop(event, index)}
+										class="flex items-center gap-2 rounded-lg border border-neutral-200 bg-white px-2.5 py-1.5"
+									>
+										<span class="cursor-grab text-neutral-300 select-none" aria-hidden="true"
+											>⋮⋮</span
 										>
-										{#if editingId === entry.localId}
-											<form onsubmit={handleRename} class="flex min-w-0 flex-1 items-center gap-1">
-												<input
-													bind:value={nameDraft}
-													aria-label="Entry name"
-													class="min-w-0 flex-1 rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm text-neutral-900 focus:border-neutral-500 focus:outline-none"
-												/>
-												<button
-													type="submit"
-													class="shrink-0 rounded-md bg-neutral-900 px-2 py-1 text-xs font-medium text-white hover:bg-neutral-800"
-												>
-													Save
-												</button>
-												<button
-													type="button"
-													onclick={cancelRename}
-													class="shrink-0 rounded-md px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-100"
-												>
-													Cancel
-												</button>
-											</form>
-										{:else}
-											<button
-												onclick={() => entry.serverId && beginRename(entry)}
-												disabled={!entry.serverId}
-												title={entry.serverId ? 'Rename entry' : entry.name}
-												class="truncate text-sm font-medium text-neutral-800 hover:text-neutral-950 disabled:cursor-default"
-											>
-												{entry.name}
-											</button>
-											{#if entry.status === 'processing'}
-												<span class="shrink-0 text-xs text-neutral-400">Processing…</span>
-											{:else if entry.status === 'recorded'}
-												<span class="shrink-0 text-xs text-neutral-400">Unprocessed</span>
-											{:else if entry.status === 'error'}
-												<span class="shrink-0 text-xs text-red-600">Failed</span>
-											{:else}
-												<span class="shrink-0 text-xs text-emerald-600">Ready</span>
-											{/if}
-										{/if}
-									</div>
-									<div class="flex shrink-0 items-center gap-1">
-										{#if entry.status === 'recorded'}
-											<button
-												onclick={() => processEntry(entry)}
-												class="rounded-md px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900"
-											>
-												Process
-											</button>
-										{/if}
+										<span class="min-w-0 flex-1 truncate text-sm text-neutral-700"
+											>{lineLabel(line)}</span
+										>
 										<button
-											onclick={() => removeEntry(entry)}
-											class="rounded-md px-2 py-1 text-xs text-neutral-500 hover:bg-red-50 hover:text-red-600"
+											onclick={() => removeLineAt(index)}
+											class="shrink-0 rounded px-1.5 py-0.5 text-xs text-neutral-400 hover:bg-red-50 hover:text-red-600"
 										>
-											Delete
+											×
 										</button>
 									</div>
-								</div>
+								{/each}
+							{/if}
+						</div>
 
-								{#if entry.error}
-									<p class="text-xs text-red-600">{entry.error}</p>
-								{/if}
+						{#if scrapbookBusy}
+							<p class="text-xs text-neutral-400">Rendering…</p>
+						{:else if scrapbook.render?.timeline?.length}
+							<EntryPlayer src={scrapbookSrc} lyrics={scrapbook.render.timeline} />
+						{:else if scrapbook.lines.length}
+							<button
+								onclick={renderActive}
+								class="rounded-lg bg-neutral-900 px-3 py-2 text-sm font-medium text-white hover:bg-neutral-800"
+							>
+								Render mix
+							</button>
+						{/if}
+					{/if}
+				</section>
 
-								{#if entry.status === 'done' && entryAudio(entry)}
-									<EntryPlayer src={entryAudio(entry)} lyrics={entry.lyrics} />
-								{:else if entryAudio(entry)}
-									<audio controls src={entryAudio(entry)} class="w-full"></audio>
-								{/if}
-							</li>
-						{/each}
-					</ul>
-				{/if}
-			</section>
+				<!-- Journal (right) -->
+				<section class="order-1 flex flex-col gap-3 lg:order-2">
+					<div class="flex items-center justify-between gap-2">
+						<div class="flex items-center gap-1">
+							<button
+								onclick={() => (tab = 'all')}
+								class="rounded-md px-2.5 py-1 text-xs font-medium {tab === 'all'
+									? 'bg-neutral-900 text-white'
+									: 'text-neutral-500 hover:bg-neutral-100'}"
+							>
+								All entries
+							</button>
+							<button
+								onclick={() => (tab = 'bookmarked')}
+								class="rounded-md px-2.5 py-1 text-xs font-medium {tab === 'bookmarked'
+									? 'bg-neutral-900 text-white'
+									: 'text-neutral-500 hover:bg-neutral-100'}"
+							>
+								Bookmarked
+							</button>
+						</div>
+						<span class="text-xs text-neutral-400">{visibleEntries.length} entries</span>
+					</div>
+
+					{#if visibleEntries.length === 0}
+						<p
+							class="rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-400"
+						>
+							{tab === 'bookmarked'
+								? 'No bookmarked entries yet. Star an entry to keep it here.'
+								: 'Nothing yet — start recording and keep a phrase.'}
+						</p>
+					{:else}
+						<ul class="space-y-3">
+							{#each visibleEntries as entry (entry.localId)}
+								<li class="space-y-3 rounded-xl border border-neutral-200 bg-white px-4 py-3">
+									<div class="flex items-center justify-between gap-3">
+										<div class="flex min-w-0 flex-1 items-center gap-2">
+											<span class="font-mono text-xs text-neutral-400"
+												>{String(entry.index).padStart(2, '0')}</span
+											>
+											{#if editingId === entry.localId}
+												<form
+													onsubmit={handleRename}
+													class="flex min-w-0 flex-1 items-center gap-1"
+												>
+													<input
+														bind:value={nameDraft}
+														aria-label="Entry name"
+														class="min-w-0 flex-1 rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm focus:border-neutral-500 focus:outline-none"
+													/>
+													<button
+														type="submit"
+														class="rounded-md bg-neutral-900 px-2 py-1 text-xs text-white"
+													>
+														Save
+													</button>
+													<button
+														type="button"
+														onclick={cancelRename}
+														class="rounded-md px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-100"
+													>
+														Cancel
+													</button>
+												</form>
+											{:else}
+												<button
+													onclick={() => entry.serverId && beginRename(entry)}
+													disabled={!entry.serverId}
+													title={entry.serverId ? 'Rename entry' : entry.name}
+													class="truncate text-sm font-medium text-neutral-800 hover:text-neutral-950 disabled:cursor-default"
+												>
+													{entry.name}
+												</button>
+												{#if entry.status === 'processing'}
+													<span class="shrink-0 text-xs text-neutral-400">Processing…</span>
+												{:else if entry.status === 'recorded'}
+													<span class="shrink-0 text-xs text-neutral-400">Unprocessed</span>
+												{:else if entry.status === 'error'}
+													<span class="shrink-0 text-xs text-red-600">Failed</span>
+												{:else}
+													<span class="shrink-0 text-xs text-emerald-600">Ready</span>
+												{/if}
+											{/if}
+										</div>
+										<div class="flex shrink-0 items-center gap-1">
+											<button
+												onclick={() => toggleBookmark(entry)}
+												title={entry.bookmarked ? 'Remove bookmark' : 'Bookmark entry'}
+												aria-label={entry.bookmarked ? 'Remove bookmark' : 'Bookmark entry'}
+												class="rounded-md px-1.5 py-1 text-sm {entry.bookmarked
+													? 'text-amber-500'
+													: 'text-neutral-300 hover:text-neutral-500'}"
+											>
+												{entry.bookmarked ? '★' : '☆'}
+											</button>
+											{#if entry.status === 'recorded'}
+												<button
+													onclick={() => processEntry(entry)}
+													class="rounded-md px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100"
+												>
+													Process
+												</button>
+											{/if}
+											<button
+												onclick={() => removeEntry(entry)}
+												class="rounded-md px-2 py-1 text-xs text-neutral-500 hover:bg-red-50 hover:text-red-600"
+											>
+												Delete
+											</button>
+										</div>
+									</div>
+
+									{#if entry.error}
+										<p class="text-xs text-red-600">{entry.error}</p>
+									{/if}
+
+									{#if entry.status === 'done' && entryAudio(entry)}
+										<EntryPlayer
+											src={entryAudio(entry)}
+											lyrics={entry.lyrics}
+											dragLine={(lineIndex) => journalLinePayload(entry, lineIndex)}
+										/>
+									{:else if entryAudio(entry)}
+										<audio controls src={entryAudio(entry)} class="w-full"></audio>
+									{/if}
+								</li>
+							{/each}
+						</ul>
+					{/if}
+				</section>
+			</div>
 		{/if}
 	</div>
 </main>

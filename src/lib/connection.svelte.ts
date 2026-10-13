@@ -53,6 +53,7 @@ export type TakeMeta = {
 	take_id: string;
 	index: number;
 	name?: string;
+	bookmarked?: boolean;
 	status: string;
 	processed?: boolean;
 	input_filename?: string;
@@ -301,6 +302,133 @@ export function takeAudioUrl(
 ): string {
 	const tail = source === 'original' ? 'original' : `audio/${source}`;
 	return `${base(url)}/sessions/${encodeURIComponent(sessionId)}/takes/${encodeURIComponent(takeId)}/${tail}`;
+}
+
+/** Toggle a journal entry's bookmark. */
+export async function setBookmark(
+	url: string,
+	sessionId: string,
+	takeId: string,
+	bookmarked: boolean
+): Promise<void> {
+	const response = await fetch(
+		`${base(url)}/sessions/${encodeURIComponent(sessionId)}/takes/${encodeURIComponent(takeId)}?bookmarked=${bookmarked ? 'true' : 'false'}`,
+		{ method: 'PATCH', headers: { accept: 'application/json' } }
+	);
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when bookmarking the entry.`);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Scrapbooks (tempo-matched mixes of isolated lines)
+// ---------------------------------------------------------------------------
+
+/** A line lifted from a processed journal entry. */
+export type LineRef = { session_id: string; take_id: string; line_index: number };
+
+export type ScrapbookSummary = {
+	scrapbook_id: string;
+	name: string;
+	bpm: number;
+	line_count: number;
+	created_at?: string;
+	updated_at?: string;
+	rendered?: boolean;
+};
+
+/** The server's render of a scrapbook: one mix plus a word timeline. */
+export type ScrapbookRender = {
+	audio: string;
+	bpm: number;
+	timeline: LyricLine[];
+	gaps: number[];
+	rendered_at?: string;
+};
+
+export type Scrapbook = ScrapbookSummary & {
+	lines: LineRef[];
+	render: ScrapbookRender | null;
+};
+
+export async function listScrapbooks(url: string): Promise<ScrapbookSummary[]> {
+	const response = await fetch(`${base(url)}/scrapbooks`, {
+		headers: { accept: 'application/json' }
+	});
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when listing scrapbooks.`);
+	}
+	const body: unknown = await response.json();
+	if (!isRecord(body) || !Array.isArray(body.scrapbooks)) return [];
+	return body.scrapbooks as ScrapbookSummary[];
+}
+
+export async function getScrapbook(url: string, scrapbookId: string): Promise<Scrapbook> {
+	const response = await fetch(`${base(url)}/scrapbooks/${encodeURIComponent(scrapbookId)}`, {
+		headers: { accept: 'application/json' }
+	});
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when loading the scrapbook.`);
+	}
+	return (await response.json()) as Scrapbook;
+}
+
+export async function createScrapbook(
+	url: string,
+	body: { name: string; bpm: number; lines: LineRef[] }
+): Promise<ScrapbookSummary> {
+	const response = await fetch(`${base(url)}/scrapbooks`, {
+		method: 'POST',
+		headers: { 'content-type': 'application/json', accept: 'application/json' },
+		body: JSON.stringify(body)
+	});
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when creating the scrapbook.`);
+	}
+	return (await response.json()) as ScrapbookSummary;
+}
+
+export async function updateScrapbook(
+	url: string,
+	scrapbookId: string,
+	body: { name?: string; bpm?: number; lines?: LineRef[] }
+): Promise<Scrapbook> {
+	const response = await fetch(`${base(url)}/scrapbooks/${encodeURIComponent(scrapbookId)}`, {
+		method: 'PATCH',
+		headers: { 'content-type': 'application/json', accept: 'application/json' },
+		body: JSON.stringify(body)
+	});
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when saving the scrapbook.`);
+	}
+	return (await response.json()) as Scrapbook;
+}
+
+export async function deleteScrapbook(url: string, scrapbookId: string): Promise<void> {
+	const response = await fetch(`${base(url)}/scrapbooks/${encodeURIComponent(scrapbookId)}`, {
+		method: 'DELETE',
+		headers: { accept: 'application/json' }
+	});
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when deleting the scrapbook.`);
+	}
+}
+
+/** Render (or fetch the cached) tempo-matched mix for a scrapbook. */
+export async function renderScrapbook(url: string, scrapbookId: string): Promise<ScrapbookRender> {
+	const response = await fetch(
+		`${base(url)}/scrapbooks/${encodeURIComponent(scrapbookId)}/render`,
+		{ method: 'POST', headers: { accept: 'application/json' } }
+	);
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when rendering the scrapbook.`);
+	}
+	return (await response.json()) as ScrapbookRender;
+}
+
+/** A playable url for a scrapbook's rendered mix. */
+export function scrapbookAudioUrl(url: string, scrapbookId: string): string {
+	return `${base(url)}/scrapbooks/${encodeURIComponent(scrapbookId)}/audio`;
 }
 
 /** A finished take's result, or null when it has not produced one. */

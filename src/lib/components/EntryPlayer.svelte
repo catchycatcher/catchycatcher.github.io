@@ -1,7 +1,16 @@
 <script lang="ts">
 	import type { LyricLine } from '#lib/connection.svelte.ts';
 
-	let { src, lyrics }: { src: string; lyrics: LyricLine[] } = $props();
+	let {
+		src,
+		lyrics,
+		dragLine
+	}: {
+		src: string;
+		lyrics: LyricLine[];
+		/** When set, each line bubble becomes draggable with this payload. */
+		dragLine?: (lineIndex: number) => string | null;
+	} = $props();
 
 	type Word = { text: string; start: number; end: number };
 	type Line = { text: string; start: number; end: number; words: Word[] };
@@ -155,6 +164,13 @@
 			<button
 				type="button"
 				data-active={index === activeLine}
+				draggable={dragLine ? dragLine(index) !== null : false}
+				ondragstart={(event) => {
+					const payload = dragLine?.(index);
+					if (!payload || !event.dataTransfer) return;
+					event.dataTransfer.setData('application/x-catchy-line', payload);
+					event.dataTransfer.effectAllowed = 'copy';
+				}}
 				onclick={() => playFrom(line.start)}
 				class="w-fit max-w-full self-start rounded-xl border px-2.5 py-1 text-left text-sm leading-snug transition-colors {index ===
 				activeLine
