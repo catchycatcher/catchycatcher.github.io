@@ -588,6 +588,8 @@ export type ScrapbookSummary = {
 	scrapbook_id: string;
 	name: string;
 	line_count: number;
+	/** Optional fixed tempo the mix is snapped to (else the median take tempo). */
+	target_bpm?: number | null;
 	created_at?: string;
 	updated_at?: string;
 	rendered?: boolean;
@@ -668,7 +670,7 @@ export async function updateScrapbook(
 	url: string,
 	sessionId: string,
 	scrapbookId: string,
-	body: { name?: string; lines?: ScrapEntry[] }
+	body: { name?: string; lines?: ScrapEntry[]; target_bpm?: number | null }
 ): Promise<Scrapbook> {
 	const response = await fetch(
 		`${scrapbookBase(url, sessionId)}/${encodeURIComponent(scrapbookId)}`,
