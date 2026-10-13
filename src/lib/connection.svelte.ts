@@ -61,6 +61,8 @@ export type TakeMeta = {
 	name?: string;
 	bookmarked?: boolean;
 	status: string;
+	/** ``text`` for text-only scribbles; absent/``audio`` for recordings. */
+	kind?: string;
 	processed?: boolean;
 	input_filename?: string;
 	error?: string | null;
@@ -475,6 +477,76 @@ export function scribbleAudioUrl(
 ): string {
 	const tail = source === 'original' ? 'original' : `audio/${source}`;
 	return `${base(url)}/scribbles/${encodeURIComponent(scribbleId)}/${tail}`;
+}
+
+/** Rewrite one audio scribble's line from edited text (re-guesses timings). */
+export async function updateScribbleLineText(
+	url: string,
+	scribbleId: string,
+	lineIndex: number,
+	text: string
+): Promise<LyricLine> {
+	const response = await fetch(
+		`${base(url)}/scribbles/${encodeURIComponent(scribbleId)}/lines/${lineIndex}?text=${encodeURIComponent(text)}`,
+		{ method: 'PATCH', headers: { accept: 'application/json' } }
+	);
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when saving the line.`);
+	}
+	const body = (await response.json()) as { line: LyricLine };
+	return body.line;
+}
+
+/** Replace an audio scribble's lines (re-splitting); the server recomputes BPM. */
+export async function updateScribbleLyrics(
+	url: string,
+	scribbleId: string,
+	lines: { words: LyricWord[]; raw?: boolean }[]
+): Promise<LyricLine[]> {
+	const response = await fetch(`${base(url)}/scribbles/${encodeURIComponent(scribbleId)}/lyrics`, {
+		method: 'PUT',
+		headers: { 'content-type': 'application/json', accept: 'application/json' },
+		body: JSON.stringify({ lines })
+	});
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when saving the lines.`);
+	}
+	const body = (await response.json()) as { lyrics: LyricLine[] };
+	return body.lyrics;
+}
+
+/** Create a text-only scribble (no audio) from a name and its lines. */
+export async function createTextScribble(
+	url: string,
+	body: { name: string; lines: string[] }
+): Promise<TakeMeta> {
+	const response = await fetch(`${base(url)}/scribbles/text`, {
+		method: 'POST',
+		headers: { 'content-type': 'application/json', accept: 'application/json' },
+		body: JSON.stringify(body)
+	});
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when creating the scribble.`);
+	}
+	return (await response.json()) as TakeMeta;
+}
+
+/** Replace a text scribble's lines. */
+export async function updateTextScribble(
+	url: string,
+	scribbleId: string,
+	lines: string[]
+): Promise<LyricLine[]> {
+	const response = await fetch(`${base(url)}/scribbles/${encodeURIComponent(scribbleId)}/text`, {
+		method: 'PUT',
+		headers: { 'content-type': 'application/json', accept: 'application/json' },
+		body: JSON.stringify({ lines })
+	});
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when saving the scribble.`);
+	}
+	const body = (await response.json()) as { lyrics: LyricLine[] };
+	return body.lyrics;
 }
 
 // ---------------------------------------------------------------------------

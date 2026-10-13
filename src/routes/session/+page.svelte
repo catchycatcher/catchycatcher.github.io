@@ -30,11 +30,11 @@
 		uploadTake,
 		type LineRef,
 		type LyricLine,
-		type LyricWord,
 		type Scrapbook,
 		type ScrapbookSummary,
 		type TakeMeta
 	} from '#lib/connection.svelte.ts';
+	import { carve, lyricsPayload, mergeSelected } from '#lib/lyrics.ts';
 	import { newEntryName } from '#lib/session.ts';
 	import { extensionForMime, Recorder } from '#lib/recorder.svelte.ts';
 	import EntryPlayer from '#lib/components/EntryPlayer.svelte';
@@ -57,6 +57,7 @@
 		id: string;
 		index: number;
 		name: string;
+		kind: 'audio' | 'text';
 		status: EntryStatus;
 		lyrics: LyricLine[];
 		error?: string | null;
@@ -185,6 +186,7 @@
 				id: item.take_id,
 				index: item.index ?? 0,
 				name: item.name?.trim() || item.take_id,
+				kind: item.kind === 'text' ? 'text' : 'audio',
 				status: normalizeStatus(item.status),
 				lyrics: [],
 				error: item.error ?? null
@@ -807,31 +809,8 @@
 		window.setTimeout(() => bubble.classList.remove('ring-2', 'ring-amber-500'), 1200);
 	}
 
-	function payload(lines: LyricLine[]) {
-		return lines.map((line) => ({ words: line.words, raw: line.raw }));
-	}
-
 	/** Per-entry request counter, so a slow older response can't clobber a newer edit. */
 	const lyricEditSeq: Record<string, number> = {};
-
-	/**
-	 * Build a display line locally so a re-line is instant. The server's response
-	 * (with the real BPM/timings) replaces it a moment later.
-	 */
-	function localLine(words: LyricWord[], raw: boolean, fallback: LyricLine): LyricLine {
-		const starts = words
-			.map((word) => word.start)
-			.filter((v): v is number => typeof v === 'number');
-		const ends = words.map((word) => word.end).filter((v): v is number => typeof v === 'number');
-		const line: LyricLine = {
-			bpm: fallback.bpm ?? 0,
-			'start time': starts.length ? Math.min(...starts) : fallback['start time'],
-			'end time': ends.length ? Math.max(...ends) : fallback['end time'],
-			words
-		};
-		if (raw) line.raw = true;
-		return line;
-	}
 
 	/**
 	 * Apply a new segmentation to a take. The UI updates immediately; the server
@@ -849,7 +828,7 @@
 		lyricEditSeq[entry.localId] = seq;
 		void (async () => {
 			try {
-				const updated = await updateLyrics(url, sessionId, takeId, payload(lines));
+				const updated = await updateLyrics(url, sessionId, takeId, lyricsPayload(lines));
 				if (lyricEditSeq[entry.localId] === seq) {
 					updateEntry(entry.localId, { lyrics: updated });
 				}
@@ -862,40 +841,17 @@
 		})();
 	}
 
-	/** Ctrl-clicked: merge the selected lines into one raw (bubble-less) line.
-	 *  A single line just loses its bubbles so you can carve it back up. */
+	/** Ctrl-clicked: merge the selection into one raw (bubble-less) line, then carve. */
 	function mergeSelectedLines(entry: Entry, indices: number[]) {
-		const lines = entry.lyrics;
-		if (!indices.length) return;
-		const low = Math.max(0, indices[0]);
-		const high = Math.min(lines.length - 1, indices[indices.length - 1]);
-		if (high < low) return;
-		if (low === high && lines[low].raw) return;
-		const mergedWords: LyricWord[] = [];
-		for (let index = low; index <= high; index++) mergedWords.push(...lines[index].words);
-		if (!mergedWords.length) return;
-		const next = [
-			...lines.slice(0, low),
-			localLine(mergedWords, true, lines[low]),
-			...lines.slice(high + 1)
-		];
-		applyLyrics(entry, next);
+		const next = mergeSelected(entry.lyrics, indices);
+		if (next) applyLyrics(entry, next);
 	}
 
 	/** Dragged across words of a raw line: those words become a bubble, the rest
 	 *  stays raw so you can keep carving. */
 	function carveLine(entry: Entry, index: number, from: number, to: number) {
-		const line = entry.lyrics[index];
-		if (!line) return;
-		const words = line.words;
-		if (from === 0 && to === words.length - 1 && !line.raw) return;
-		const raw = Boolean(line.raw);
-		const parts: LyricLine[] = [];
-		if (from > 0) parts.push(localLine(words.slice(0, from), raw, line));
-		parts.push(localLine(words.slice(from, to + 1), false, line));
-		if (to + 1 < words.length) parts.push(localLine(words.slice(to + 1), raw, line));
-		const next = [...entry.lyrics.slice(0, index), ...parts, ...entry.lyrics.slice(index + 1)];
-		applyLyrics(entry, next);
+		const next = carve(entry.lyrics, index, from, to);
+		if (next) applyLyrics(entry, next);
 	}
 
 	/** True when the stored render's lines match the scrapbook's current lines. */
@@ -1309,7 +1265,7 @@
 													>
 														Process
 													</button>
-												{:else if scribble.status === 'done'}
+												{:else if scribble.kind === 'audio' && scribble.status === 'done'}
 													<button
 														onclick={() => copyScribbleToScrapbook(scribble)}
 														disabled={scrapbookBusy}
@@ -1327,7 +1283,17 @@
 										{/if}
 
 										{#if expandedScribbles[scribble.id]}
-											{#if scribble.status === 'done' && scribbleAudio(scribble)}
+											{#if scribble.kind === 'text'}
+												<div class="space-y-1.5">
+													{#each scribble.lyrics as line, lineIndex (lineIndex)}
+														<div
+															class="rounded-lg border border-dashed border-neutral-300 bg-white px-3 py-1.5 text-sm text-neutral-800"
+														>
+															{line.text ?? ''}
+														</div>
+													{/each}
+												</div>
+											{:else if scribble.status === 'done' && scribbleAudio(scribble)}
 												<EntryPlayer
 													src={scribbleAudio(scribble)}
 													lyrics={scribble.lyrics}

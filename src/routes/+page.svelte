@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { tick } from 'svelte';
 	import { goto, pushState, replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
@@ -6,6 +7,7 @@
 	import {
 		bootstrap,
 		connection,
+		createTextScribble,
 		deleteScribble,
 		deleteSession,
 		disconnect,
@@ -19,10 +21,14 @@
 		retry,
 		scribbleAudioUrl,
 		startNewSession,
+		updateScribbleLineText,
+		updateScribbleLyrics,
+		updateTextScribble,
 		uploadScribble,
 		type LyricLine,
 		type TakeMeta
 	} from '#lib/connection.svelte.ts';
+	import { carve, lyricsPayload, mergeSelected } from '#lib/lyrics.ts';
 	import { parseShareInput, toHref } from '#lib/share.ts';
 	import { formatSessionDate, newEntryName, newTakeId, type Session } from '#lib/session.ts';
 	import { extensionForMime, Recorder } from '#lib/recorder.svelte.ts';
@@ -35,6 +41,7 @@
 		id: string;
 		index: number;
 		name: string;
+		kind: 'audio' | 'text';
 		status: ScribbleStatus;
 		lyrics: LyricLine[];
 		error?: string | null;
@@ -129,6 +136,7 @@
 				id: item.take_id,
 				index: item.index ?? 0,
 				name: item.name?.trim() || item.take_id,
+				kind: item.kind === 'text' ? 'text' : 'audio',
 				status: normalizeScribbleStatus(item.status),
 				lyrics: [],
 				error: item.error ?? null
@@ -170,7 +178,10 @@
 		const index = nextScribbleIndex++;
 		const id = newTakeId();
 		const name = newEntryName();
-		scribbles = [{ id, index, name, status: 'processing', lyrics: [], error: null }, ...scribbles];
+		scribbles = [
+			{ id, index, name, kind: 'audio', status: 'processing', lyrics: [], error: null },
+			...scribbles
+		];
 
 		const file = new File([blob], `scribble-${index}.${extensionForMime(blob.type)}`, {
 			type: blob.type || 'audio/webm'
@@ -247,6 +258,177 @@
 						}
 					: candidate
 			);
+		}
+	}
+
+	// --- Audio scribble line editing (homepage only) -----------------------
+
+	/** Per-scribble request counter, so a slow older response can't clobber a newer edit. */
+	const scribbleEditSeq: Record<string, number> = {};
+
+	function setScribbleLyrics(id: string, lyrics: LyricLine[]) {
+		scribbles = scribbles.map((candidate) =>
+			candidate.id === id ? { ...candidate, lyrics } : candidate
+		);
+	}
+
+	/** Re-line a scribble instantly; the server (BPM) catches up in the background. */
+	function applyScribbleLyrics(scribble: Scribble, lines: LyricLine[]) {
+		const previous = scribble.lyrics;
+		setScribbleLyrics(scribble.id, lines);
+
+		const url = api.url;
+		if (!url) return;
+		const seq = (scribbleEditSeq[scribble.id] ?? 0) + 1;
+		scribbleEditSeq[scribble.id] = seq;
+		void (async () => {
+			try {
+				const updated = await updateScribbleLyrics(url, scribble.id, lyricsPayload(lines));
+				if (scribbleEditSeq[scribble.id] === seq) setScribbleLyrics(scribble.id, updated);
+			} catch (editError) {
+				if (scribbleEditSeq[scribble.id] === seq) setScribbleLyrics(scribble.id, previous);
+				scribbleError =
+					editError instanceof Error ? editError.message : 'Could not save the lines.';
+			}
+		})();
+	}
+
+	function mergeScribbleLines(scribble: Scribble, indices: number[]) {
+		const next = mergeSelected(scribble.lyrics, indices);
+		if (next) applyScribbleLyrics(scribble, next);
+	}
+
+	function carveScribbleLine(scribble: Scribble, index: number, from: number, to: number) {
+		const next = carve(scribble.lyrics, index, from, to);
+		if (next) applyScribbleLyrics(scribble, next);
+	}
+
+	async function editScribbleLine(scribble: Scribble, index: number, text: string) {
+		const url = api.url;
+		if (!url) return;
+		const trimmed = text.trim();
+		setScribbleLyrics(
+			scribble.id,
+			scribble.lyrics.map((line, lineIndex) =>
+				lineIndex === index ? { ...line, text: trimmed } : line
+			)
+		);
+		try {
+			const updated = await updateScribbleLineText(url, scribble.id, index, trimmed);
+			setScribbleLyrics(
+				scribble.id,
+				scribble.lyrics.map((line, lineIndex) => (lineIndex === index ? updated : line))
+			);
+		} catch (editError) {
+			scribbleError = editError instanceof Error ? editError.message : 'Could not save the line.';
+		}
+	}
+
+	// --- Text scribbles ----------------------------------------------------
+
+	function textLinesOf(scribble: Scribble): string[] {
+		return scribble.lyrics.map((line) => line.text ?? '');
+	}
+
+	function textLinesToLyrics(lines: string[]): LyricLine[] {
+		return lines.map((text) => ({ bpm: 0, 'start time': 0, 'end time': 0, words: [], text }));
+	}
+
+	async function newTextScribble() {
+		const url = api.url;
+		if (!url || scribbleBusy) return;
+		scribbleBusy = true;
+		try {
+			const created = await createTextScribble(url, { name: newEntryName(), lines: [] });
+			nextScribbleIndex = Math.max(nextScribbleIndex, (created.index ?? 0) + 1);
+			scribbles = [
+				{
+					id: created.take_id,
+					index: created.index ?? nextScribbleIndex - 1,
+					name: created.name?.trim() || created.take_id,
+					kind: 'text',
+					status: 'done',
+					lyrics: textLinesToLyrics(['']),
+					error: null
+				},
+				...scribbles
+			];
+		} catch (createError) {
+			scribbleError =
+				createError instanceof Error ? createError.message : 'Could not create the scribble.';
+		} finally {
+			scribbleBusy = false;
+		}
+	}
+
+	/** Debounced persistence for text scribbles (one timer per scribble id). */
+	const textSaveTimers: Record<string, number> = {};
+
+	function scheduleTextSave(scribble: Scribble) {
+		window.clearTimeout(textSaveTimers[scribble.id]);
+		textSaveTimers[scribble.id] = window.setTimeout(() => {
+			void saveTextScribble(scribble.id);
+		}, 600);
+	}
+
+	async function saveTextScribble(scribbleId: string) {
+		const url = api.url;
+		if (!url) return;
+		const current = scribbles.find((candidate) => candidate.id === scribbleId);
+		if (!current) return;
+		try {
+			await updateTextScribble(
+				url,
+				scribbleId,
+				textLinesOf(current).map((line) => line.trim())
+			);
+		} catch (saveError) {
+			scribbleError =
+				saveError instanceof Error ? saveError.message : 'Could not save the scribble.';
+		}
+	}
+
+	function updateTextLine(scribble: Scribble, index: number, value: string) {
+		setScribbleLyrics(
+			scribble.id,
+			scribble.lyrics.map((line, lineIndex) =>
+				lineIndex === index ? { ...line, text: value } : line
+			)
+		);
+		scheduleTextSave(scribble);
+	}
+
+	function addTextLine(scribble: Scribble, index: number) {
+		const lines = [...scribble.lyrics];
+		lines.splice(index + 1, 0, { bpm: 0, 'start time': 0, 'end time': 0, words: [], text: '' });
+		setScribbleLyrics(scribble.id, lines);
+		scheduleTextSave(scribble);
+		void focusTextLine(scribble.id, index + 1);
+	}
+
+	function removeTextLine(scribble: Scribble, index: number) {
+		if (scribble.lyrics.length <= 1) return;
+		setScribbleLyrics(
+			scribble.id,
+			scribble.lyrics.filter((_line, lineIndex) => lineIndex !== index)
+		);
+		scheduleTextSave(scribble);
+		void focusTextLine(scribble.id, Math.max(0, index - 1));
+	}
+
+	async function focusTextLine(scribbleId: string, index: number) {
+		await tick();
+		document.querySelector<HTMLInputElement>(`[data-text-line="${scribbleId}-${index}"]`)?.focus();
+	}
+
+	function onTextLineKeydown(scribble: Scribble, index: number, event: KeyboardEvent) {
+		const element = event.currentTarget as HTMLInputElement;
+		if (event.key === 'Enter') {
+			event.preventDefault();
+			addTextLine(scribble, index);
+		} else if (event.key === 'Backspace' && element.value === '' && scribble.lyrics.length > 1) {
+			event.preventDefault();
+			removeTextLine(scribble, index);
 		}
 	}
 
@@ -580,8 +762,15 @@
 								>
 									Record scribble
 								</button>
+								<button
+									onclick={newTextScribble}
+									disabled={scribbleBusy}
+									class="rounded-full border border-neutral-300 px-4 py-1.5 text-sm font-medium text-neutral-700 hover:bg-neutral-100 disabled:opacity-60"
+								>
+									New text scribble
+								</button>
 								<span class="text-xs text-neutral-500"
-									>It'll appear in every session's Scribbles tab.</span
+									>Recordings become lyrics; text scribbles are just editable boxes.</span
 								>
 							{/if}
 						</div>
@@ -670,12 +859,39 @@
 											<p class="text-xs text-red-600">{scribble.error}</p>
 										{/if}
 
-										{#if scribble.status === 'done' && scribbleAudio(scribble)}
+										{#if scribble.kind === 'text'}
+											<div class="space-y-1.5">
+												{#each textLinesOf(scribble) as line, lineIndex (lineIndex)}
+													<input
+														value={line}
+														data-text-line="{scribble.id}-{lineIndex}"
+														oninput={(event) =>
+															updateTextLine(scribble, lineIndex, event.currentTarget.value)}
+														onkeydown={(event) => onTextLineKeydown(scribble, lineIndex, event)}
+														aria-label="Scribble line"
+														placeholder="Type a line…"
+														class="w-full rounded-lg border border-dashed border-neutral-300 bg-white px-3 py-1.5 text-sm text-neutral-800 placeholder:text-neutral-400 focus:border-solid focus:border-neutral-500 focus:outline-none"
+													/>
+												{/each}
+												<button
+													type="button"
+													onclick={() => addTextLine(scribble, textLinesOf(scribble).length - 1)}
+													class="rounded-md px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-200 hover:text-neutral-700"
+												>
+													＋ Add line
+												</button>
+											</div>
+										{:else if scribble.status === 'done' && scribbleAudio(scribble)}
 											<EntryPlayer
 												src={scribbleAudio(scribble)}
 												lyrics={scribble.lyrics}
 												framed={false}
 												downloadName={scribble.name}
+												onEditLine={(lineIndex, text) =>
+													editScribbleLine(scribble, lineIndex, text)}
+												onMergeSelected={(indices) => mergeScribbleLines(scribble, indices)}
+												onCarve={(lineIndex, from, to) =>
+													carveScribbleLine(scribble, lineIndex, from, to)}
 											/>
 										{:else if scribbleAudio(scribble)}
 											<EntryPlayer
