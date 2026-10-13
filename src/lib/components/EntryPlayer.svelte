@@ -242,7 +242,6 @@
 		event.preventDefault();
 		expandedGroups[id] = !expandedGroups[id];
 	}
-
 	let renamingGroup = $state<string | null>(null);
 	let groupNameDraft = $state('');
 
@@ -442,8 +441,7 @@
 			return 'w-full touch-none break-words select-none rounded-md px-1 py-1 text-left text-sm leading-snug text-neutral-700';
 		}
 		const group = lines[index]?.group;
-		const groupKey = group?.instance ?? group?.id;
-		const inOpenGroup = groupKey ? Boolean(expandedGroups[groupKey]) : false;
+		const inOpenGroup = group ? Boolean(expandedGroups[group.id]) : false;
 		const isSelected = selected.includes(index);
 		const isActive = index === activeLine;
 		let state = inOpenGroup
@@ -747,7 +745,6 @@
 		<!-- Always-present row: group the selection, or drag out an existing section. -->
 		<div class="flex min-h-7 flex-wrap items-center gap-1.5">
 			{#if selected.length}
-				<span class="text-xs text-neutral-400">Group {selected.length} as</span>
 				{#each SECTIONS as section (section.type)}
 					<button
 						type="button"
@@ -826,7 +823,7 @@
 								draggable={Boolean(dragLine || allowReorder)}
 								ondragstart={(event) => dragGroupStart(event, row.indices)}
 								ondragend={clearDrop}
-								ondblclick={(event) => onGroupDoubleClick(row.instance, event)}
+								ondblclick={(event) => onGroupDoubleClick(row.id, event)}
 								title="Double-click to show the lines inside"
 								class={groupBubbleClass(row.type)}
 							>
@@ -849,7 +846,7 @@
 										</button>
 									{/if}
 								</span>
-								{#if expandedGroups[row.instance]}
+								{#if expandedGroups[row.id]}
 									<span class="block text-xs opacity-60">Double-click to close</span>
 								{:else}
 									{#each row.indices as lineIndex (lineIndex)}
@@ -879,7 +876,7 @@
 						{/if}
 					</div>
 					{#if expandedGroups[row.id]}
-						<div class="flex flex-col gap-1 pl-3">
+						<div class="flex flex-col gap-2.5 pl-3">
 							{#each row.indices as lineIndex (lineIndex)}{@render lineRow(lineIndex)}{/each}
 						</div>
 					{/if}
