@@ -13,6 +13,7 @@
 		onDropLines,
 		onMoveLines,
 		onRemove,
+		onRemoveGroup,
 		onEditLine,
 		onLocateLine,
 		onMergeSelected,
@@ -37,11 +38,13 @@
 		lineRef?: (lineIndex: number) => unknown | null;
 		/** Allow dragging the selection to reorder within this player. */
 		allowReorder?: boolean;
-		/** A selection of lines dropped in at ``index``. */
-		onDropLines?: (refs: unknown[], index: number) => void;
+		/** A selection of lines dropped in at ``index`` (``outside`` = before a section). */
+		onDropLines?: (refs: unknown[], index: number, outside?: boolean) => void;
 		/** Move the selected line indices to sit before ``index``. */
-		onMoveLines?: (from: number[], to: number) => void;
+		onMoveLines?: (from: number[], to: number, outside?: boolean) => void;
 		onRemove?: (index: number) => void;
+		/** Delete a whole section (all of the given line indices). */
+		onRemoveGroup?: (indices: number[]) => void;
 		/** Double-clicking a line edits its text (timings are re-guessed). */
 		onEditLine?: (index: number, text: string) => void;
 		/** Ctrl/cmd-clicking a line jumps to it in the journal. */
@@ -99,6 +102,8 @@
 	let anchor = $state<number | null>(null);
 	/** Insertion point for a drag, drawn as a line between bubbles. */
 	let dropIndex = $state<number | null>(null);
+	/** True when the drop is landing *before* a section (leaves it, not joins it). */
+	let dropOutside = $state(false);
 	/** Absolute top (px) for the insertion line, so it never shifts the rows. */
 	let dropTop = $state<number | null>(null);
 	/** Index of the line being text-edited, if any. */
@@ -421,14 +426,18 @@
 		return [...indices].sort((a, b) => a - b);
 	}
 
-	/** Selected = blue; the playing line = yellow; both = blue fill, yellow outline. */
+	/** Selected = blue; the playing line = yellow; inside an open section = its colour. */
 	function bubbleClass(index: number): string {
 		if (lines[index]?.raw) {
 			return 'w-full touch-none break-words select-none rounded-md px-1 py-1 text-left text-sm leading-snug text-neutral-700';
 		}
+		const group = lines[index]?.group;
+		const inOpenGroup = group ? expandedGroups[group.id] : false;
 		const isSelected = selected.includes(index);
 		const isActive = index === activeLine;
-		let state = 'border-neutral-200 bg-white/60 hover:bg-white';
+		let state = inOpenGroup
+			? sectionStyle(group?.type ?? 'other')
+			: 'border-neutral-200 bg-white/60 hover:bg-white';
 		if (isSelected && isActive) {
 			// Yellow outline replaces the blue one (no double outline).
 			state = 'border-amber-400 bg-blue-200';
@@ -474,21 +483,29 @@
 		return Number(element.dataset.lineStart ?? 0);
 	}
 
-	/** The line index the drop lands on, from the pointer's y. */
-	function insertionIndex(clientY: number): number {
-		if (!listEl) return lines.length;
+	/**
+	 * Where a drop at ``clientY`` lands. Landing in the top half of a section
+	 * header means "before the section" (outside); anywhere else maps to the line
+	 * that would follow the drop.
+	 */
+	function insertionIndex(clientY: number): { index: number; outside: boolean } {
+		if (!listEl) return { index: lines.length, outside: false };
 		const rowEls = [...listEl.querySelectorAll<HTMLElement>('[data-row][data-line-start]')];
 		for (const element of rowEls) {
 			const rect = element.getBoundingClientRect();
-			if (clientY < rect.top + rect.height / 2) return rowStart(element);
+			if (clientY < rect.top + rect.height / 2) {
+				return { index: rowStart(element), outside: element.dataset.groupRow === 'true' };
+			}
 		}
-		return lines.length;
+		return { index: lines.length, outside: false };
 	}
 
 	function onListDragOver(event: DragEvent) {
 		if (!droppable) return;
 		event.preventDefault();
-		dropIndex = insertionIndex(event.clientY);
+		const hit = insertionIndex(event.clientY);
+		dropIndex = hit.index;
+		dropOutside = hit.outside;
 		dropTop = indicatorTop(dropIndex);
 	}
 
@@ -511,6 +528,7 @@
 
 	function clearDrop() {
 		dropIndex = null;
+		dropOutside = false;
 		dropTop = null;
 	}
 
@@ -518,13 +536,14 @@
 		if (!droppable) return;
 		event.preventDefault();
 		const index = dropIndex ?? lines.length;
+		const outside = dropOutside;
 		clearDrop();
 
 		const external = event.dataTransfer?.getData('application/x-catchy-lines');
 		if (external && onDropLines) {
 			try {
 				const refs: unknown = JSON.parse(external);
-				if (Array.isArray(refs)) onDropLines(refs, index);
+				if (Array.isArray(refs)) onDropLines(refs, index, outside);
 			} catch {
 				/* ignore malformed drag data */
 			}
@@ -535,7 +554,7 @@
 		if (internal && onMoveLines) {
 			try {
 				const from: unknown = JSON.parse(internal);
-				if (Array.isArray(from)) onMoveLines(from as number[], index);
+				if (Array.isArray(from)) onMoveLines(from as number[], index, outside);
 			} catch {
 				/* ignore malformed drag data */
 			}
@@ -763,7 +782,12 @@
 				{@render lineRow(row.index)}
 			{:else}
 				<div role="listitem" class="flex flex-col gap-1">
-					<div data-row data-line-start={row.indices[0]} class="flex items-center gap-1">
+					<div
+						data-row
+						data-group-row="true"
+						data-line-start={row.indices[0]}
+						class="flex items-center gap-1"
+					>
 						{#if renamingGroup === row.id}
 							<form onsubmit={commitGroupRename} class="flex items-center gap-1">
 								<input
@@ -825,6 +849,16 @@
 									class="shrink-0 rounded px-1.5 py-0.5 text-xs text-neutral-400 hover:bg-neutral-200 hover:text-neutral-700"
 								>
 									Ungroup
+								</button>
+							{/if}
+							{#if onRemoveGroup}
+								<button
+									type="button"
+									onclick={() => onRemoveGroup(row.indices)}
+									title="Delete the whole section"
+									class="shrink-0 rounded px-1.5 py-0.5 text-xs text-neutral-400 hover:bg-red-50 hover:text-red-600"
+								>
+									×
 								</button>
 							{/if}
 						{/if}

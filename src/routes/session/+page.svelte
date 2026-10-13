@@ -778,10 +778,10 @@
 		return lines[index]?.group;
 	}
 
-	function addLinesAt(refs: LineRef[], index?: number) {
+	function addLinesAt(refs: LineRef[], index?: number, outside = false) {
 		const current = scrapbook ? [...scrapbookFlat] : [];
 		const at = index ?? current.length;
-		const target = groupAt(current, at);
+		const target = outside ? undefined : groupAt(current, at);
 		const incoming = refs.map((ref) => (target && !ref.group ? { ...ref, group: target } : ref));
 		current.splice(at, 0, ...incoming);
 		saveLines(current, incoming[0]?.group?.id, at);
@@ -795,8 +795,43 @@
 		saveLines(current, groupId, sourceIndex);
 	}
 
+	/** Delete a whole section (every line of the instance that was clicked). */
+	function removeGroupAt(indices: number[]) {
+		if (!scrapbook || !indices.length) return;
+		const type = scrapbookFlat[indices[0]]?.group?.type;
+		const drop: Record<number, boolean> = {};
+		for (const index of indices) drop[index] = true;
+		let lines = scrapbookFlat.filter((_ref, index) => !drop[index]);
+		if (type) lines = renumberSections(lines, type);
+		saveLines(lines);
+	}
+
+	/** True when the given indices include the whole of at least one run of ``groupId``. */
+	function wholeRunMoved(current: LineRef[], moving: number[], groupId: string): boolean {
+		const set: Record<number, boolean> = {};
+		for (const index of moving) set[index] = true;
+		let index = 0;
+		while (index < current.length) {
+			if (current[index].group?.id !== groupId) {
+				index++;
+				continue;
+			}
+			const start = index;
+			while (index < current.length && current[index].group?.id === groupId) index++;
+			let complete = true;
+			for (let step = start; step < index; step++) {
+				if (!set[step]) {
+					complete = false;
+					break;
+				}
+			}
+			if (complete) return true;
+		}
+		return false;
+	}
+
 	/** Move the selected indices together so they land before ``to``. */
-	function moveLines(from: number[], to: number) {
+	function moveLines(from: number[], to: number, outside = false) {
 		const current = scrapbook ? [...scrapbookFlat] : [];
 		const valid = from
 			.filter((index) => index >= 0 && index < current.length)
@@ -808,19 +843,14 @@
 		const remaining = current.filter((_line, index) => !valid.includes(index));
 		const target = Math.max(0, Math.min(remaining.length, to - removedBefore));
 
-		// Which sections still have lines left where they were.
-		const stillPresent: Record<string, boolean> = {};
-		for (const line of remaining) {
-			if (line.group?.id) stillPresent[line.group.id] = true;
-		}
-
-		// Dropping into a section joins it. Otherwise a line pulled out of a section
-		// becomes a plain line, while a section moved whole keeps its identity.
-		const destination = groupAt(remaining, target);
+		// Dropping into a section joins it. A line pulled out of a section becomes a
+		// plain line, while a section moved whole (or a whole linked instance) keeps
+		// its identity.
+		const destination = outside ? undefined : groupAt(remaining, target);
 		const placed = moving.map((ref) => {
 			if (destination) return { ...ref, group: destination };
 			const id = ref.group?.id;
-			if (id && stillPresent[id]) {
+			if (id && !wholeRunMoved(current, valid, id)) {
 				return {
 					session_id: ref.session_id,
 					take_id: ref.take_id,
@@ -1318,9 +1348,11 @@
 								loading={scrapbookLoading}
 								downloadName={scrapbook.name}
 								allowReorder
-								onDropLines={(refs, index) => addLinesAt(refs as LineRef[], index)}
+								onDropLines={(refs, index, outside) =>
+									addLinesAt(refs as LineRef[], index, outside)}
 								onMoveLines={moveLines}
 								onRemove={removeLineAt}
+								onRemoveGroup={removeGroupAt}
 								onLocateLine={locateScrapbookLine}
 								onGroupLines={groupScrapbookLines}
 								onUngroup={ungroupScrapbookLines}
