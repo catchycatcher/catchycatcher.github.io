@@ -66,8 +66,6 @@
 	let editDraft = $state('');
 	/** Word range being dragged out for carving (only on a raw line). */
 	let carving = $state<{ index: number; from: number; to: number } | null>(null);
-	/** A bubble that follows the pointer while carving. */
-	let ghost = $state<{ x: number; y: number; words: string[] } | null>(null);
 
 	/** Each line's display text (edited override, else its words joined). */
 	function resolve(rawLines: LyricLine[]): Line[] {
@@ -220,7 +218,15 @@
 			/* synthetic or stale pointer id; carving still works without capture */
 		}
 		carving = { index, from: wordIndex, to: wordIndex };
-		ghost = { x: event.clientX, y: event.clientY, words: [lines[index].words[wordIndex]] };
+		// The line re-renders while dragging (the bubble grows), which can drop the
+		// captured element's pointerup, so commit from a window listener instead.
+		window.addEventListener('pointerup', wordPointerUp, { once: true });
+		window.addEventListener('pointercancel', cancelCarve, { once: true });
+	}
+
+	function cancelCarve() {
+		carving = null;
+		window.removeEventListener('pointerup', wordPointerUp);
 	}
 
 	function wordPointerMove(event: PointerEvent) {
@@ -230,21 +236,13 @@
 		if (!span) return;
 		const lineIndex = Number(span.dataset.lineIndex);
 		if (lineIndex !== carving.index) return;
-		const wordIndex = Number(span.dataset.wordIndex);
-		carving = { index: carving.index, from: carving.from, to: wordIndex };
-		const low = Math.min(carving.from, carving.to);
-		const high = Math.max(carving.from, carving.to);
-		ghost = {
-			x: event.clientX,
-			y: event.clientY,
-			words: lines[carving.index].words.slice(low, high + 1)
-		};
+		carving = { index: carving.index, from: carving.from, to: Number(span.dataset.wordIndex) };
 	}
 
 	function wordPointerUp() {
 		const active = carving;
 		carving = null;
-		ghost = null;
+		window.removeEventListener('pointercancel', cancelCarve);
 		if (active && onCarve) {
 			onCarve(active.index, Math.min(active.from, active.to), Math.max(active.from, active.to));
 		}
@@ -398,6 +396,18 @@
 </script>
 
 <div bind:this={rootEl} class="space-y-3 rounded-xl border border-neutral-200 bg-neutral-50 p-3">
+	{#snippet wordSpan(lineIndex: number, word: string, wordIndex: number)}
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<span
+			data-word-index={wordIndex}
+			data-line-index={lineIndex}
+			class="mr-1 rounded px-0.5"
+			onpointerdown={(event) => wordPointerDown(lineIndex, wordIndex, event)}
+			onpointermove={wordPointerMove}
+			onpointerup={wordPointerUp}>{word}</span
+		>
+	{/snippet}
+
 	<div class="flex items-center gap-3">
 		<button
 			type="button"
@@ -516,25 +526,35 @@
 							: undefined}
 						class={bubbleClass(index)}
 					>
-						{#each line.words as word, wordIndex (wordIndex)}
-							<!-- svelte-ignore a11y_no_static_element_interactions -->
+						{#if carving && carving.index === index}
+							{@const low = Math.min(carving.from, carving.to)}
+							{@const high = Math.max(carving.from, carving.to)}
+							{#each line.words.slice(0, low) as word, offset (offset)}{@render wordSpan(
+									index,
+									word,
+									offset
+								)}{/each}
 							<span
-								data-word-index={wordIndex}
-								data-line-index={index}
-								class="rounded px-0.5 {carving &&
-								carving.index === index &&
-								wordIndex >= Math.min(carving.from, carving.to) &&
-								wordIndex <= Math.max(carving.from, carving.to)
-									? 'bg-amber-500 text-white'
-									: ''}"
-								onpointerdown={(event) => wordPointerDown(index, wordIndex, event)}
-								onpointermove={wordPointerMove}
-								onpointerup={wordPointerUp}
+								class="inline-flex items-center rounded-xl border border-amber-400 bg-amber-200 px-1 py-0.5 shadow-sm"
 							>
-								{word}
+								{#each line.words.slice(low, high + 1) as word, offset (offset)}{@render wordSpan(
+										index,
+										word,
+										low + offset
+									)}{/each}
 							</span>
-							{#if wordIndex < line.words.length - 1}<span> </span>{/if}
-						{/each}
+							{#each line.words.slice(high + 1) as word, offset (offset)}{@render wordSpan(
+									index,
+									word,
+									high + 1 + offset
+								)}{/each}
+						{:else}
+							{#each line.words as word, wordIndex (wordIndex)}{@render wordSpan(
+									index,
+									word,
+									wordIndex
+								)}{/each}
+						{/if}
 					</button>
 					{#if onRemove}
 						<button
@@ -569,14 +589,4 @@
 		onloadedmetadata={() => (duration = audio?.duration ?? 0)}
 		ondurationchange={() => (duration = audio?.duration ?? 0)}
 	></audio>
-
-	{#if ghost}
-		<div
-			class="pointer-events-none fixed z-50 rounded-xl border border-amber-400 bg-amber-200 px-2.5 py-1 text-sm text-neutral-900 shadow-lg"
-			style="left:{ghost.x + 8}px; top:{ghost.y + 8}px"
-			aria-hidden="true"
-		>
-			{ghost.words.join(' ')}
-		</div>
-	{/if}
 </div>
