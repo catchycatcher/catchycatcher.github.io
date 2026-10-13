@@ -368,6 +368,116 @@ export async function setBookmark(
 }
 
 // ---------------------------------------------------------------------------
+// Scribbles (a journal shared across every session)
+// ---------------------------------------------------------------------------
+//
+// A scribble is a take that lives in the reserved ``scribbles`` session, so the
+// homepage records them there and every session can read them. Kept apart from
+// the song sessions by the server (``/sessions`` never lists it).
+
+/** The reserved session id the server stores global scribbles under. */
+export const SCRIBBLES_SESSION_ID = 'scribbles';
+
+/** Every scribble on the server, newest first. */
+export async function listScribbles(url: string): Promise<TakeMeta[]> {
+	const response = await fetch(`${base(url)}/scribbles`, {
+		headers: { accept: 'application/json' }
+	});
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when listing scribbles.`);
+	}
+	const body: unknown = await response.json();
+	if (!isRecord(body) || !Array.isArray(body.scribbles)) return [];
+	return body.scribbles as TakeMeta[];
+}
+
+/** Upload one scribble; processed by default (pass ``process: false`` to store). */
+export async function uploadScribble(
+	url: string,
+	file: File,
+	{
+		process = true,
+		index,
+		name,
+		scribbleId = newTakeId()
+	}: { process?: boolean; index?: number; name?: string; scribbleId?: string } = {}
+): Promise<TakeUpload> {
+	const query = [`process=${process ? 'true' : 'false'}`];
+	if (index !== undefined) query.push(`index=${index}`);
+	if (name) query.push(`name=${encodeURIComponent(name)}`);
+
+	const form = new FormData();
+	form.append('file', file);
+
+	const response = await fetch(
+		`${base(url)}/scribbles/${encodeURIComponent(scribbleId)}?${query.join('&')}`,
+		{ method: 'POST', body: form, headers: { accept: 'application/json' } }
+	);
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when saving the scribble.`);
+	}
+
+	const body: unknown = await response.json();
+	if (process) return { takeId: scribbleId, result: body as TakeResult, meta: null };
+	return { takeId: scribbleId, result: null, meta: body as TakeMeta };
+}
+
+/** Process a previously stored (unprocessed) scribble. */
+export async function processScribble(url: string, scribbleId: string): Promise<TakeResult> {
+	const response = await fetch(`${base(url)}/scribbles/${encodeURIComponent(scribbleId)}/process`, {
+		method: 'POST',
+		headers: { accept: 'application/json' }
+	});
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when processing the scribble.`);
+	}
+	return (await response.json()) as TakeResult;
+}
+
+/** A scribble's processed result, or null when it has none. */
+export async function getScribble(url: string, scribbleId: string): Promise<TakeResult | null> {
+	const response = await fetch(`${base(url)}/scribbles/${encodeURIComponent(scribbleId)}`, {
+		headers: { accept: 'application/json' }
+	});
+	if (!response.ok) return null;
+	const body: unknown = await response.json();
+	if (isRecord(body) && isRecord(body.result)) return body.result as TakeResult;
+	return null;
+}
+
+/** Rename a scribble. */
+export async function renameScribble(url: string, scribbleId: string, name: string): Promise<void> {
+	const response = await fetch(
+		`${base(url)}/scribbles/${encodeURIComponent(scribbleId)}?name=${encodeURIComponent(name)}`,
+		{ method: 'PATCH', headers: { accept: 'application/json' } }
+	);
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when renaming the scribble.`);
+	}
+}
+
+/** Delete a scribble and its files. */
+export async function deleteScribble(url: string, scribbleId: string): Promise<void> {
+	const response = await fetch(`${base(url)}/scribbles/${encodeURIComponent(scribbleId)}`, {
+		method: 'DELETE',
+		headers: { accept: 'application/json' }
+	});
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when deleting the scribble.`);
+	}
+}
+
+/** A playable url for a scribble's raw audio or a generated stem. */
+export function scribbleAudioUrl(
+	url: string,
+	scribbleId: string,
+	source: 'original' | 'vocals' | 'background' = 'original'
+): string {
+	const tail = source === 'original' ? 'original' : `audio/${source}`;
+	return `${base(url)}/scribbles/${encodeURIComponent(scribbleId)}/${tail}`;
+}
+
+// ---------------------------------------------------------------------------
 // Scrapbooks (tempo-matched mixes of isolated lines)
 // ---------------------------------------------------------------------------
 

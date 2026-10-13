@@ -6,16 +6,39 @@
 	import {
 		bootstrap,
 		connection,
+		deleteScribble,
 		deleteSession,
 		disconnect,
 		establish,
+		getScribble,
+		listScribbles,
+		processScribble,
 		refreshSessions,
+		renameScribble as renameScribbleApi,
 		renameSession,
 		retry,
-		startNewSession
+		scribbleAudioUrl,
+		startNewSession,
+		uploadScribble,
+		type LyricLine,
+		type TakeMeta
 	} from '#lib/connection.svelte.ts';
 	import { formatShareCode, parseShareInput, toHref } from '#lib/share.ts';
-	import { formatSessionDate, type Session } from '#lib/session.ts';
+	import { formatSessionDate, newEntryName, newTakeId, type Session } from '#lib/session.ts';
+	import { extensionForMime, Recorder } from '#lib/recorder.svelte.ts';
+	import EntryPlayer from '#lib/components/EntryPlayer.svelte';
+
+	type ScribbleStatus = 'recorded' | 'processing' | 'done' | 'error';
+
+	/** A scribble: a journal take shared across every session. */
+	type Scribble = {
+		id: string;
+		index: number;
+		name: string;
+		status: ScribbleStatus;
+		lyrics: LyricLine[];
+		error?: string | null;
+	};
 
 	/** False until the query string has been read in the browser. */
 	let ready = $state(false);
@@ -29,6 +52,20 @@
 	let nameDraft = $state('');
 	/** The id of the session awaiting delete confirmation, or null. */
 	let confirmingId = $state<string | null>(null);
+
+	/** Scribbles: a journal shared across every session, recorded here. */
+	let scribbles = $state<Scribble[]>([]);
+	let scribblesLoading = $state(false);
+	let scribbleError = $state<string | null>(null);
+	let nextScribbleIndex = $state(1);
+	let scribbleBusy = $state(false);
+	let editingScribbleId = $state<string | null>(null);
+	let scribbleNameDraft = $state('');
+
+	const recorder = new Recorder();
+	let segmentStartedAt = $state(0);
+	let elapsed = $state(0);
+	let scribblesLoadedFor = '';
 
 	// Effects never run on the server, so this is our "read the url on load" hook.
 	// Reading page.url keeps it reactive: back/forward re-resolves for free, and
@@ -50,6 +87,213 @@
 	$effect(() => {
 		if (ready && !api.url && connection.status !== 'checking') inputEl?.focus();
 	});
+
+	// Scribbles are global: load them once per server.
+	$effect(() => {
+		const url = api.url;
+		if (!url || scribblesLoadedFor === url) return;
+		scribblesLoadedFor = url;
+		void loadScribbles(url);
+	});
+
+	// Live timer while recording a scribble.
+	$effect(() => {
+		if (!recorder.recording || segmentStartedAt <= 0) {
+			elapsed = 0;
+			return;
+		}
+		const started = segmentStartedAt;
+		const timer = setInterval(() => {
+			elapsed = (performance.now() - started) / 1000;
+		}, 100);
+		return () => clearInterval(timer);
+	});
+
+	// Release the microphone when leaving the page.
+	$effect(() => {
+		const onUnload = () => recorder.stop();
+		window.addEventListener('beforeunload', onUnload);
+		return () => {
+			window.removeEventListener('beforeunload', onUnload);
+			recorder.stop();
+		};
+	});
+
+	function normalizeScribbleStatus(status: string | undefined): ScribbleStatus {
+		if (status === 'done' || status === 'processing' || status === 'error') return status;
+		return 'recorded';
+	}
+
+	async function loadScribbles(url: string) {
+		scribblesLoading = true;
+		scribbleError = null;
+		try {
+			const list = await listScribbles(url);
+			const loaded: Scribble[] = list.map((item: TakeMeta) => ({
+				id: item.take_id,
+				index: item.index ?? 0,
+				name: item.name?.trim() || item.take_id,
+				status: normalizeScribbleStatus(item.status),
+				lyrics: [],
+				error: item.error ?? null
+			}));
+			scribbles = loaded;
+			nextScribbleIndex = loaded.reduce((max, scribble) => Math.max(max, scribble.index), 0) + 1;
+
+			for (const scribble of loaded) {
+				if (scribble.status !== 'done') continue;
+				const result = await getScribble(url, scribble.id);
+				if (result) {
+					scribbles = scribbles.map((candidate) =>
+						candidate.id === scribble.id ? { ...candidate, lyrics: result.lyrics } : candidate
+					);
+				}
+			}
+		} catch (loadError) {
+			scribbleError = loadError instanceof Error ? loadError.message : 'Could not load scribbles.';
+		} finally {
+			scribblesLoading = false;
+		}
+	}
+
+	async function startRecording() {
+		await recorder.start();
+		if (recorder.recording) segmentStartedAt = performance.now();
+	}
+
+	/** Keep the current take and process it into a scribble. */
+	async function saveScribble() {
+		const url = api.url;
+		if (!url || !recorder.recording || scribbleBusy) return;
+
+		const blob = await recorder.takeSegment();
+		recorder.stop();
+		segmentStartedAt = 0;
+		if (!blob) return;
+
+		const index = nextScribbleIndex++;
+		const id = newTakeId();
+		const name = newEntryName();
+		scribbles = [{ id, index, name, status: 'processing', lyrics: [], error: null }, ...scribbles];
+
+		const file = new File([blob], `scribble-${index}.${extensionForMime(blob.type)}`, {
+			type: blob.type || 'audio/webm'
+		});
+
+		scribbleBusy = true;
+		try {
+			const upload = await uploadScribble(url, file, {
+				process: true,
+				index,
+				name,
+				scribbleId: id
+			});
+			scribbles = scribbles.map((candidate) =>
+				candidate.id === id
+					? { ...candidate, status: 'done', lyrics: upload.result?.lyrics ?? [] }
+					: candidate
+			);
+		} catch (saveError) {
+			scribbles = scribbles.map((candidate) =>
+				candidate.id === id
+					? {
+							...candidate,
+							status: 'error',
+							error: saveError instanceof Error ? saveError.message : 'Could not save the scribble.'
+						}
+					: candidate
+			);
+		} finally {
+			scribbleBusy = false;
+		}
+	}
+
+	function discardScribble() {
+		recorder.stop();
+		segmentStartedAt = 0;
+	}
+
+	function scribbleAudio(scribble: Scribble): string {
+		const url = api.url;
+		if (!url) return '';
+		return scribbleAudioUrl(url, scribble.id, scribble.status === 'done' ? 'vocals' : 'original');
+	}
+
+	async function processScribbleEntry(scribble: Scribble) {
+		const url = api.url;
+		if (!url) return;
+		scribbles = scribbles.map((candidate) =>
+			candidate.id === scribble.id ? { ...candidate, status: 'processing', error: null } : candidate
+		);
+		try {
+			const result = await processScribble(url, scribble.id);
+			scribbles = scribbles.map((candidate) =>
+				candidate.id === scribble.id
+					? { ...candidate, status: 'done', lyrics: result.lyrics }
+					: candidate
+			);
+		} catch (processError) {
+			scribbles = scribbles.map((candidate) =>
+				candidate.id === scribble.id
+					? {
+							...candidate,
+							status: 'error',
+							error:
+								processError instanceof Error
+									? processError.message
+									: 'Could not process the scribble.'
+						}
+					: candidate
+			);
+		}
+	}
+
+	async function removeScribble(scribble: Scribble) {
+		const url = api.url;
+		if (!url) return;
+		try {
+			await deleteScribble(url, scribble.id);
+			scribbles = scribbles.filter((candidate) => candidate.id !== scribble.id);
+		} catch (deleteError) {
+			scribbleError = deleteError instanceof Error ? deleteError.message : 'Could not delete.';
+		}
+	}
+
+	function beginScribbleRename(scribble: Scribble) {
+		editingScribbleId = scribble.id;
+		scribbleNameDraft = scribble.name;
+	}
+
+	function cancelScribbleRename() {
+		editingScribbleId = null;
+		scribbleNameDraft = '';
+	}
+
+	async function handleScribbleRename(event: SubmitEvent) {
+		event.preventDefault();
+		const id = editingScribbleId;
+		const name = scribbleNameDraft.trim();
+		if (!id || !name) return;
+		const url = api.url;
+		const scribble = scribbles.find((candidate) => candidate.id === id);
+		cancelScribbleRename();
+		if (!scribble || !url) return;
+		if (scribble.name !== name) {
+			scribbles = scribbles.map((candidate) =>
+				candidate.id === id ? { ...candidate, name } : candidate
+			);
+		}
+		try {
+			await renameScribbleApi(url, id, name);
+		} catch (renameError) {
+			scribbleError = renameError instanceof Error ? renameError.message : 'Could not rename.';
+		}
+	}
+
+	function formatElapsed(seconds: number): string {
+		const whole = Math.floor(seconds);
+		return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
+	}
 
 	/** Create a session, then drop straight into its page. */
 	async function handleNewSession() {
@@ -132,7 +376,7 @@
 </svelte:head>
 
 <main class="grid min-h-dvh place-items-center bg-white px-6 text-neutral-900">
-	<div class="w-full max-w-md">
+	<div class="w-full {api.url ? 'max-w-2xl' : 'max-w-md'}">
 		{#if !ready}
 			<p class="text-center text-sm text-neutral-400">Loading…</p>
 		{:else if connection.status === 'checking'}
@@ -277,6 +521,164 @@
 												</button>
 											</div>
 										</div>
+									{/if}
+								</li>
+							{/each}
+						</ul>
+					{/if}
+				</section>
+
+				<section class="space-y-3">
+					<div class="flex items-center justify-between">
+						<h2 class="text-xs font-medium tracking-wide text-neutral-500 uppercase">Scribbles</h2>
+						<span class="text-xs text-neutral-400">{scribbles.length}</span>
+					</div>
+					<p class="text-xs text-neutral-500">
+						A journal shared across every session. Record one here and use it anywhere.
+					</p>
+
+					<div
+						class="flex flex-wrap items-center gap-3 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3"
+					>
+						{#if recorder.state === 'error'}
+							<p class="text-sm text-red-600">{recorder.error}</p>
+							<button
+								onclick={startRecording}
+								class="rounded-lg bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800"
+							>
+								Try again
+							</button>
+						{:else if recorder.recording}
+							<span class="size-2.5 animate-pulse rounded-full bg-red-600"></span>
+							<span class="text-sm font-medium">Recording</span>
+							<span class="font-mono text-sm text-neutral-500">{formatElapsed(elapsed)}</span>
+							<div class="ml-auto flex items-center gap-2">
+								<button
+									onclick={saveScribble}
+									disabled={scribbleBusy}
+									class="rounded-lg bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-60"
+								>
+									Keep &amp; process
+								</button>
+								<button
+									onclick={discardScribble}
+									class="rounded-lg border border-neutral-300 px-3 py-1.5 text-sm text-neutral-700 hover:bg-neutral-100"
+								>
+									Discard
+								</button>
+							</div>
+						{:else}
+							<button
+								onclick={startRecording}
+								class="rounded-full bg-red-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-red-700"
+							>
+								Record scribble
+							</button>
+							<span class="text-xs text-neutral-500"
+								>It'll appear in every session's Scribbles tab.</span
+							>
+						{/if}
+					</div>
+
+					{#if scribbleError}
+						<p class="text-xs text-red-600">{scribbleError}</p>
+					{/if}
+
+					{#if scribbles.length === 0}
+						<p
+							class="rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-400"
+						>
+							{scribblesLoading ? 'Loading…' : 'No scribbles yet.'}
+						</p>
+					{:else}
+						<ul class="space-y-2">
+							{#each scribbles as scribble (scribble.id)}
+								<li class="space-y-3 rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3">
+									<div class="flex items-center justify-between gap-3">
+										{#if editingScribbleId === scribble.id}
+											<form
+												onsubmit={handleScribbleRename}
+												class="flex min-w-0 flex-1 items-center gap-2"
+											>
+												<input
+													bind:value={scribbleNameDraft}
+													aria-label="Scribble name"
+													class="min-w-0 flex-1 rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm focus:border-neutral-500 focus:outline-none"
+												/>
+												<button
+													type="submit"
+													class="shrink-0 rounded-md bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-800"
+												>
+													Save
+												</button>
+												<button
+													type="button"
+													onclick={cancelScribbleRename}
+													class="shrink-0 rounded-md px-3 py-1.5 text-xs text-neutral-600 hover:bg-neutral-100"
+												>
+													Cancel
+												</button>
+											</form>
+										{:else}
+											<div class="flex min-w-0 flex-1 items-center gap-2">
+												<span class="font-mono text-xs text-neutral-400"
+													>{String(scribble.index).padStart(2, '0')}</span
+												>
+												<button
+													onclick={() => beginScribbleRename(scribble)}
+													title="Rename scribble"
+													class="truncate text-sm font-medium text-neutral-800 hover:text-neutral-950"
+												>
+													{scribble.name}
+												</button>
+												{#if scribble.status === 'processing'}
+													<span class="shrink-0 text-xs text-neutral-400">Processing…</span>
+												{:else if scribble.status === 'recorded'}
+													<span class="shrink-0 text-xs text-neutral-400">Unprocessed</span>
+												{:else if scribble.status === 'error'}
+													<span class="shrink-0 text-xs text-red-600">Failed</span>
+												{:else}
+													<span class="shrink-0 text-xs text-emerald-600">Ready</span>
+												{/if}
+											</div>
+										{/if}
+										<div class="flex shrink-0 items-center gap-1">
+											{#if scribble.status === 'recorded'}
+												<button
+													onclick={() => processScribbleEntry(scribble)}
+													class="rounded-md px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100"
+												>
+													Process
+												</button>
+											{/if}
+											<button
+												onclick={() => removeScribble(scribble)}
+												class="rounded-md px-2 py-1 text-xs text-neutral-500 hover:bg-red-50 hover:text-red-600"
+											>
+												Delete
+											</button>
+										</div>
+									</div>
+
+									{#if scribble.error}
+										<p class="text-xs text-red-600">{scribble.error}</p>
+									{/if}
+
+									{#if scribble.status === 'done' && scribbleAudio(scribble)}
+										<EntryPlayer
+											src={scribbleAudio(scribble)}
+											lyrics={scribble.lyrics}
+											framed={false}
+											downloadName={scribble.name}
+										/>
+									{:else if scribbleAudio(scribble)}
+										<EntryPlayer
+											src={scribbleAudio(scribble)}
+											lyrics={[]}
+											emptyLabel={null}
+											framed={false}
+											downloadName={scribble.name}
+										/>
 									{/if}
 								</li>
 							{/each}

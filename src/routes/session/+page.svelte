@@ -9,13 +9,18 @@
 		deleteScrapbook,
 		deleteTake,
 		getScrapbook,
+		getScribble,
 		getSession,
 		getTakeResult,
 		listScrapbooks,
+		listScribbles,
+		processScribble,
 		processTake,
 		renderScrapbook,
 		renameTake,
 		scrapbookAudioUrl,
+		scribbleAudioUrl,
+		SCRIBBLES_SESSION_ID,
 		setBookmark,
 		takeAudioUrl,
 		updateLineText,
@@ -46,6 +51,16 @@
 		error?: string | null;
 	};
 
+	/** A scribble: a journal take shared across every session. */
+	type Scribble = {
+		id: string;
+		index: number;
+		name: string;
+		status: EntryStatus;
+		lyrics: LyricLine[];
+		error?: string | null;
+	};
+
 	/** False until the query string has been read in the browser. */
 	let ready = $state(false);
 	let sessionId = $state('');
@@ -55,7 +70,12 @@
 	/** The journal: one entry per take, newest first. */
 	let entries = $state<Entry[]>([]);
 	let nextIndex = $state(1);
-	let tab = $state<'all' | 'bookmarked'>('all');
+	let tab = $state<'all' | 'bookmarked' | 'scribbles'>('all');
+
+	/** Scribbles: journal takes shared across every session. */
+	let scribbles = $state<Scribble[]>([]);
+	let scribbleError = $state<string | null>(null);
+	let scribblesLoading = $state(false);
 
 	/** Inline rename state. */
 	let editingId = $state<string | null>(null);
@@ -109,6 +129,15 @@
 		void refreshScrapbooks(url);
 	});
 
+	// Scribbles are global, so they load once per server (not per session).
+	let scribblesLoadedFor = '';
+	$effect(() => {
+		const url = api.url;
+		if (!url || scribblesLoadedFor === url) return;
+		scribblesLoadedFor = url;
+		void loadScribbles(url);
+	});
+
 	$effect(() => {
 		if (!recorder.recording || segmentStartedAt <= 0) {
 			elapsed = 0;
@@ -136,6 +165,78 @@
 		tab === 'bookmarked' ? entries.filter((entry) => entry.bookmarked) : entries
 	);
 	let pageTitle = $derived(sessionName ? `${sessionName} — Catchy Catcher` : 'Catchy Catcher');
+
+	// --- Scribbles (a global journal) --------------------------------------
+
+	async function loadScribbles(url: string) {
+		scribblesLoading = true;
+		scribbleError = null;
+		try {
+			const list = await listScribbles(url);
+			const loaded: Scribble[] = list.map((item) => ({
+				id: item.take_id,
+				index: item.index ?? 0,
+				name: item.name?.trim() || item.take_id,
+				status: normalizeStatus(item.status),
+				lyrics: [],
+				error: item.error ?? null
+			}));
+			scribbles = loaded;
+			for (const scribble of loaded) {
+				if (scribble.status !== 'done') continue;
+				const result = await getScribble(url, scribble.id);
+				if (result) {
+					scribbles = scribbles.map((candidate) =>
+						candidate.id === scribble.id ? { ...candidate, lyrics: result.lyrics } : candidate
+					);
+				}
+			}
+		} catch (loadError) {
+			scribbleError = loadError instanceof Error ? loadError.message : 'Could not load scribbles.';
+		} finally {
+			scribblesLoading = false;
+		}
+	}
+
+	function scribbleAudio(scribble: Scribble): string {
+		const url = api.url;
+		if (!url) return '';
+		return scribbleAudioUrl(url, scribble.id, scribble.status === 'done' ? 'vocals' : 'original');
+	}
+
+	function scribbleLineRef(scribble: Scribble, lineIndex: number): LineRef | null {
+		if (scribble.status !== 'done') return null;
+		return { session_id: SCRIBBLES_SESSION_ID, take_id: scribble.id, line_index: lineIndex };
+	}
+
+	async function processScribbleEntry(scribble: Scribble) {
+		const url = api.url;
+		if (!url) return;
+		scribbles = scribbles.map((candidate) =>
+			candidate.id === scribble.id ? { ...candidate, status: 'processing', error: null } : candidate
+		);
+		try {
+			const result = await processScribble(url, scribble.id);
+			scribbles = scribbles.map((candidate) =>
+				candidate.id === scribble.id
+					? { ...candidate, status: 'done', lyrics: result.lyrics }
+					: candidate
+			);
+		} catch (processError) {
+			scribbles = scribbles.map((candidate) =>
+				candidate.id === scribble.id
+					? {
+							...candidate,
+							status: 'error',
+							error:
+								processError instanceof Error
+									? processError.message
+									: 'Could not process the scribble.'
+						}
+					: candidate
+			);
+		}
+	}
 
 	// Keep the editable name field in step with the open scrapbook (including
 	// after a rename or switching to another one). Leave it alone while the
@@ -478,12 +579,18 @@
 		}
 	}
 
-	async function copyEntryToScrapbook(entry: Entry) {
+	/** Append a take's (or scribble's) lines to the open scrapbook. */
+	async function copyLinesToScrapbook(
+		name: string,
+		sourceSessionId: string,
+		takeId: string,
+		lyrics: LyricLine[]
+	) {
 		const url = api.url;
-		if (!url || !entry.serverId || entry.status !== 'done') return;
-		const lines: LineRef[] = entry.lyrics.map((_line, lineIndex) => ({
-			session_id: sessionId,
-			take_id: entry.serverId as string,
+		if (!url) return;
+		const lines: LineRef[] = lyrics.map((_line, lineIndex) => ({
+			session_id: sourceSessionId,
+			take_id: takeId,
 			line_index: lineIndex
 		}));
 		if (!lines.length) return;
@@ -496,7 +603,7 @@
 		scrapbookBusy = true;
 		scrapbookError = null;
 		try {
-			const created = await createScrapbook(url, { name: entry.name, lines });
+			const created = await createScrapbook(url, { name, lines });
 			await refreshScrapbooks(url);
 			await selectScrapbook(created.scrapbook_id);
 		} catch (createError) {
@@ -505,6 +612,16 @@
 		} finally {
 			scrapbookBusy = false;
 		}
+	}
+
+	async function copyEntryToScrapbook(entry: Entry) {
+		if (!entry.serverId || entry.status !== 'done') return;
+		await copyLinesToScrapbook(entry.name, sessionId, entry.serverId, entry.lyrics);
+	}
+
+	async function copyScribbleToScrapbook(scribble: Scribble) {
+		if (scribble.status !== 'done') return;
+		await copyLinesToScrapbook(scribble.name, SCRIBBLES_SESSION_ID, scribble.id, scribble.lyrics);
 	}
 
 	async function newScrapbook() {
@@ -852,9 +969,9 @@
 		{:else if !sessionId}
 			<p class="text-sm text-neutral-500">No session selected.</p>
 		{:else}
-			<!-- Recorder bar -->
+			<!-- Recorder bar (kept last so it sits below the panels) -->
 			<section
-				class="flex flex-wrap items-center gap-3 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-2.5"
+				class="order-last flex flex-wrap items-center gap-3 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-2.5"
 			>
 				{#if recorder.state === 'error'}
 					<p class="text-sm text-red-600">{recorder.error}</p>
@@ -1077,11 +1194,107 @@
 							>
 								Bookmarked
 							</button>
+							<button
+								onclick={() => (tab = 'scribbles')}
+								class="rounded-md px-2.5 py-1 text-xs font-medium {tab === 'scribbles'
+									? 'bg-neutral-900 text-white'
+									: 'text-neutral-500 hover:bg-neutral-100'}"
+							>
+								Scribbles
+							</button>
 						</div>
-						<span class="text-xs text-neutral-400">{visibleEntries.length} entries</span>
+						<span class="text-xs text-neutral-400">
+							{tab === 'scribbles'
+								? `${scribbles.length} scribbles`
+								: `${visibleEntries.length} entries`}
+						</span>
 					</div>
 
-					{#if visibleEntries.length === 0}
+					{#if tab === 'scribbles'}
+						<!-- Scribbles: a journal shared across every session. Made on the homepage. -->
+						{#if scribbleError}
+							<p class="text-xs text-red-600">{scribbleError}</p>
+						{/if}
+						{#if scribbles.length === 0}
+							<p
+								class="rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-400"
+							>
+								{scribblesLoading
+									? 'Loading scribbles…'
+									: 'No scribbles yet — make them from the homepage.'}
+							</p>
+						{:else}
+							<ul class="space-y-3">
+								{#each scribbles as scribble (scribble.id)}
+									<li
+										data-take-id={scribble.id}
+										class="space-y-3 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3"
+									>
+										<div class="flex items-center justify-between gap-3">
+											<div class="flex min-w-0 flex-1 items-center gap-2">
+												<span class="font-mono text-xs text-neutral-400"
+													>{String(scribble.index).padStart(2, '0')}</span
+												>
+												<span class="truncate text-sm font-medium text-neutral-800"
+													>{scribble.name}</span
+												>
+												{#if scribble.status === 'processing'}
+													<span class="shrink-0 text-xs text-neutral-400">Processing…</span>
+												{:else if scribble.status === 'recorded'}
+													<span class="shrink-0 text-xs text-neutral-400">Unprocessed</span>
+												{:else if scribble.status === 'error'}
+													<span class="shrink-0 text-xs text-red-600">Failed</span>
+												{:else}
+													<span class="shrink-0 text-xs text-emerald-600">Ready</span>
+												{/if}
+											</div>
+											<div class="flex shrink-0 items-center gap-1">
+												{#if scribble.status === 'recorded'}
+													<button
+														onclick={() => processScribbleEntry(scribble)}
+														class="rounded-md px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-200"
+													>
+														Process
+													</button>
+												{:else if scribble.status === 'done'}
+													<button
+														onclick={() => copyScribbleToScrapbook(scribble)}
+														disabled={scrapbookBusy}
+														title="Copy this scribble's lines to the open scrapbook"
+														class="rounded-md px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-200 disabled:opacity-50"
+													>
+														To scrapbook
+													</button>
+												{/if}
+											</div>
+										</div>
+
+										{#if scribble.error}
+											<p class="text-xs text-red-600">{scribble.error}</p>
+										{/if}
+
+										{#if scribble.status === 'done' && scribbleAudio(scribble)}
+											<EntryPlayer
+												src={scribbleAudio(scribble)}
+												lyrics={scribble.lyrics}
+												framed={false}
+												downloadName={scribble.name}
+												dragLine={(lineIndex) => scribbleLineRef(scribble, lineIndex)}
+											/>
+										{:else if scribbleAudio(scribble)}
+											<EntryPlayer
+												src={scribbleAudio(scribble)}
+												lyrics={[]}
+												emptyLabel={null}
+												framed={false}
+												downloadName={scribble.name}
+											/>
+										{/if}
+									</li>
+								{/each}
+							</ul>
+						{/if}
+					{:else if visibleEntries.length === 0}
 						<p
 							class="rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-400"
 						>
