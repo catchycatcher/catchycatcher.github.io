@@ -570,7 +570,7 @@ export type LineRef = {
 		text?: string | null;
 	};
 	/** Optional section grouping within a scrapbook (chorus/verse/bridge/other). */
-	group?: { id: string; type: string; name?: string };
+	group?: { id: string; type: string; name?: string; instance?: string };
 };
 
 export type ScrapbookSummary = {
@@ -592,7 +592,7 @@ export type ScrapbookRender = {
 
 /** A named section: an ordered block of lines that plays together. */
 export type ScrapGroup = {
-	group: { id: string; type: string; name?: string };
+	group: { id: string; type: string; name?: string; instance?: string };
 	lines: LineRef[];
 };
 

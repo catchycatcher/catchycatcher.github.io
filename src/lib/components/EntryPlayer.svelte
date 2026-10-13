@@ -63,7 +63,7 @@
 		framed?: boolean;
 	} = $props();
 
-	type Group = { id: string; type: string; name?: string };
+	type Group = { id: string; type: string; name?: string; instance?: string };
 	type Line = {
 		text: string;
 		start: number;
@@ -74,7 +74,14 @@
 	};
 	type Row =
 		| { kind: 'line'; index: number }
-		| { kind: 'group'; id: string; type: string; name: string; indices: number[] };
+		| {
+				kind: 'group';
+				id: string;
+				instance: string;
+				type: string;
+				name: string;
+				indices: number[];
+		  };
 
 	/** Colours for the section groups: chorus orange, verse rose, bridge green, other grey. */
 	const SECTION_STYLES: Record<string, string> = {
@@ -156,22 +163,25 @@
 	/** Which groups are expanded to show their lines (double-click toggles). */
 	let expandedGroups = $state<Record<string, boolean>>({});
 
-	/** Collapse runs of lines that share a group id into a single group row. */
+	/** Collapse runs of lines that share a section *instance* into one group row. */
 	function buildRows(items: Line[]): Row[] {
 		const rows: Row[] = [];
+		const keyOf = (line: Line): string | undefined => line.group?.instance ?? line.group?.id;
 		let i = 0;
 		while (i < items.length) {
 			const group = items[i].group;
 			if (group) {
+				const key = keyOf(items[i]);
 				const indices = [i];
 				let j = i + 1;
-				while (j < items.length && items[j].group?.id === group.id) {
+				while (j < items.length && keyOf(items[j]) === key) {
 					indices.push(j);
 					j++;
 				}
 				rows.push({
 					kind: 'group',
 					id: group.id,
+					instance: key ?? group.id,
 					type: group.type,
 					name: group.name || sectionLabel(group.type),
 					indices
@@ -202,7 +212,7 @@
 	});
 
 	function rowKey(row: Row): string {
-		return row.kind === 'line' ? `line-${row.index}` : `group-${row.id}-${row.indices[0]}`;
+		return row.kind === 'line' ? `line-${row.index}` : `group-${row.instance}`;
 	}
 
 	/** Dragging a section chip out makes a linked copy where it is dropped. */
@@ -432,7 +442,8 @@
 			return 'w-full touch-none break-words select-none rounded-md px-1 py-1 text-left text-sm leading-snug text-neutral-700';
 		}
 		const group = lines[index]?.group;
-		const inOpenGroup = group ? expandedGroups[group.id] : false;
+		const groupKey = group?.instance ?? group?.id;
+		const inOpenGroup = groupKey ? Boolean(expandedGroups[groupKey]) : false;
 		const isSelected = selected.includes(index);
 		const isActive = index === activeLine;
 		let state = inOpenGroup
@@ -488,16 +499,27 @@
 	 * header means "before the section" (outside); anywhere else maps to the line
 	 * that would follow the drop.
 	 */
-	function insertionIndex(clientY: number): { index: number; outside: boolean } {
-		if (!listEl) return { index: lines.length, outside: false };
+	function insertionIndex(clientY: number): { index: number; outside: boolean; top: number } {
+		if (!listEl) return { index: lines.length, outside: false, top: 0 };
 		const rowEls = [...listEl.querySelectorAll<HTMLElement>('[data-row][data-line-start]')];
 		for (const element of rowEls) {
 			const rect = element.getBoundingClientRect();
 			if (clientY < rect.top + rect.height / 2) {
-				return { index: rowStart(element), outside: element.dataset.groupRow === 'true' };
+				// Top half of a section header drops before it (outside); anywhere
+				// else maps onto the line that would follow the drop.
+				return {
+					index: rowStart(element),
+					outside: element.dataset.groupRow === 'true',
+					top: Math.max(0, element.offsetTop - 2)
+				};
 			}
 		}
-		return { index: lines.length, outside: false };
+		const last = rowEls[rowEls.length - 1];
+		return {
+			index: lines.length,
+			outside: false,
+			top: last ? last.offsetTop + last.offsetHeight + 2 : 0
+		};
 	}
 
 	function onListDragOver(event: DragEvent) {
@@ -506,18 +528,7 @@
 		const hit = insertionIndex(event.clientY);
 		dropIndex = hit.index;
 		dropOutside = hit.outside;
-		dropTop = indicatorTop(dropIndex);
-	}
-
-	function indicatorTop(lineIndex: number): number {
-		if (!listEl) return 0;
-		const rowEls = [...listEl.querySelectorAll<HTMLElement>('[data-row][data-line-start]')];
-		if (rowEls.length === 0) return 0;
-		for (const element of rowEls) {
-			if (rowStart(element) >= lineIndex) return Math.max(0, element.offsetTop - 2);
-		}
-		const last = rowEls[rowEls.length - 1];
-		return last.offsetTop + last.offsetHeight + 2;
+		dropTop = hit.top;
 	}
 
 	function onListDragLeave(event: DragEvent) {
@@ -810,38 +821,42 @@
 								</button>
 							</form>
 						{:else}
-							<button
-								type="button"
+							<!-- svelte-ignore a11y_no_static_element_interactions -->
+							<div
 								draggable={Boolean(dragLine || allowReorder)}
 								ondragstart={(event) => dragGroupStart(event, row.indices)}
 								ondragend={clearDrop}
-								ondblclick={(event) => onGroupDoubleClick(row.id, event)}
+								ondblclick={(event) => onGroupDoubleClick(row.instance, event)}
 								title="Double-click to show the lines inside"
 								class={groupBubbleClass(row.type)}
 							>
-								<span
-									class="mb-0.5 block text-[10px] font-semibold tracking-wide uppercase opacity-70"
-								>
-									{row.name}
+								<span class="mb-0.5 flex items-center gap-1">
+									<span class="text-[10px] font-semibold tracking-wide uppercase opacity-70">
+										{row.name}
+									</span>
+									{#if row.type === 'other' && onRenameGroup}
+										<button
+											type="button"
+											onclick={(event) => {
+												event.stopPropagation();
+												beginGroupRename(row.id, row.name);
+											}}
+											title="Rename section"
+											aria-label="Rename section"
+											class="rounded px-1 text-[11px] leading-none hover:bg-black/10"
+										>
+											✎
+										</button>
+									{/if}
 								</span>
-								{#if expandedGroups[row.id]}
+								{#if expandedGroups[row.instance]}
 									<span class="block text-xs opacity-60">Double-click to close</span>
 								{:else}
 									{#each row.indices as lineIndex (lineIndex)}
 										<span class="block">{lineText(lineIndex)}</span>
 									{/each}
 								{/if}
-							</button>
-							{#if onRenameGroup}
-								<button
-									type="button"
-									onclick={() => beginGroupRename(row.id, row.name)}
-									title="Rename section"
-									class="shrink-0 rounded px-1.5 py-0.5 text-xs text-neutral-400 hover:bg-neutral-200 hover:text-neutral-700"
-								>
-									Rename
-								</button>
-							{/if}
+							</div>
 							{#if onUngroup}
 								<button
 									type="button"

@@ -716,51 +716,76 @@
 	}
 
 	/**
-	 * Keep every instance of a section identical: the section you just edited
-	 * defines its lines and order, and the other instances are rebuilt from it.
+	 * Keep every instance of a section identical: the instance you just edited
+	 * defines the lines and order, and the other instances are rebuilt from it
+	 * (each keeping its own instance id, so adjacent ones stay separate).
 	 */
 	function syncLinkedGroups(
 		lines: LineRef[],
 		sourceGroupId?: string,
 		sourceIndex?: number
 	): LineRef[] {
-		const runs: Record<string, { start: number; end: number }[]> = {};
+		const keyOf = (ref: LineRef): string | undefined => ref.group?.instance ?? ref.group?.id;
+		const runs: {
+			id: string;
+			instance: string;
+			start: number;
+			end: number;
+			lines: LineRef[];
+		}[] = [];
 		let index = 0;
 		while (index < lines.length) {
-			const id = lines[index].group?.id;
-			if (!id) {
+			const group = lines[index].group;
+			if (!group) {
 				index++;
 				continue;
 			}
+			const key = keyOf(lines[index]);
 			const start = index;
-			while (index < lines.length && lines[index].group?.id === id) index++;
-			(runs[id] ??= []).push({ start, end: index });
+			while (index < lines.length && keyOf(lines[index]) === key) index++;
+			runs.push({
+				id: group.id,
+				instance: key ?? group.id,
+				start,
+				end: index,
+				lines: lines.slice(start, index)
+			});
 		}
-		const ids = Object.keys(runs);
+		const ids: string[] = [];
+		for (const run of runs) {
+			if (!ids.includes(run.id)) ids.push(run.id);
+		}
 		if (!ids.length) return lines;
 
 		const canonical: Record<string, LineRef[]> = {};
 		for (const id of ids) {
-			const list = runs[id];
+			const list = runs.filter((run) => run.id === id);
 			let chosen = list[0];
 			if (sourceGroupId === id && sourceIndex !== undefined) {
 				chosen = list.find((run) => sourceIndex >= run.start && sourceIndex < run.end) ?? chosen;
 			}
-			canonical[id] = lines.slice(chosen.start, chosen.end);
+			canonical[id] = chosen.lines;
 		}
 
 		const out: LineRef[] = [];
 		index = 0;
 		while (index < lines.length) {
-			const id = lines[index].group?.id;
-			if (!id) {
+			const group = lines[index].group;
+			if (!group) {
 				out.push(lines[index]);
 				index++;
 				continue;
 			}
-			while (index < lines.length && lines[index].group?.id === id) index++;
-			const source = canonical[id] ?? [];
-			out.push(...source.map((ref) => ({ ...ref, data: ref.data ? { ...ref.data } : undefined })));
+			const key = keyOf(lines[index]);
+			while (index < lines.length && keyOf(lines[index]) === key) index++;
+			const source = canonical[group.id] ?? [];
+			out.push(
+				...source.map((ref) => ({
+					...ref,
+					group: { ...group, instance: key },
+					data: ref.data ? { ...ref.data } : undefined
+				}))
+			);
 		}
 		return out;
 	}
@@ -782,7 +807,16 @@
 		const current = scrapbook ? [...scrapbookFlat] : [];
 		const at = index ?? current.length;
 		const target = outside ? undefined : groupAt(current, at);
-		const incoming = refs.map((ref) => (target && !ref.group ? { ...ref, group: target } : ref));
+		// A dragged section keeps its shared id but becomes its own instance.
+		const instances: Record<string, string> = {};
+		const incoming = refs.map((ref) => {
+			if (ref.group) {
+				if (!instances[ref.group.id]) instances[ref.group.id] = newInstanceId();
+				return { ...ref, group: { ...ref.group, instance: instances[ref.group.id] } };
+			}
+			if (target) return { ...ref, group: target };
+			return ref;
+		});
 		current.splice(at, 0, ...incoming);
 		saveLines(current, incoming[0]?.group?.id, at);
 	}
@@ -806,8 +840,9 @@
 		saveLines(lines);
 	}
 
-	/** True when the given indices include the whole of at least one run of ``groupId``. */
+	/** True when the given indices include the whole of at least one section instance. */
 	function wholeRunMoved(current: LineRef[], moving: number[], groupId: string): boolean {
+		const keyOf = (ref: LineRef): string | undefined => ref.group?.instance ?? ref.group?.id;
 		const set: Record<number, boolean> = {};
 		for (const index of moving) set[index] = true;
 		let index = 0;
@@ -816,8 +851,9 @@
 				index++;
 				continue;
 			}
+			const key = keyOf(current[index]);
 			const start = index;
-			while (index < current.length && current[index].group?.id === groupId) index++;
+			while (index < current.length && keyOf(current[index]) === key) index++;
 			let complete = true;
 			for (let step = start; step < index; step++) {
 				if (!set[step]) {
@@ -979,19 +1015,21 @@
 	/** Flatten section groups into the flat list the editor works on. */
 	function flattenEntries(entries: ScrapEntry[]): LineRef[] {
 		const out: LineRef[] = [];
-		for (const entry of entries) {
+		entries.forEach((entry, entryIndex) => {
 			if ('lines' in entry) {
-				for (const line of entry.lines) out.push({ ...line, group: entry.group });
+				const group = { ...entry.group, instance: entry.group.instance ?? `e${entryIndex}` };
+				for (const line of entry.lines) out.push({ ...line, group });
 			} else {
 				out.push(entry);
 			}
-		}
+		});
 		return out;
 	}
 
-	/** Fold consecutive same-section lines back into group entries for storage. */
+	/** Fold consecutive lines of one section *instance* back into group entries. */
 	function nestEntries(flat: LineRef[]): ScrapEntry[] {
 		const out: ScrapEntry[] = [];
+		const keyOf = (ref: LineRef): string | undefined => ref.group?.instance ?? ref.group?.id;
 		let index = 0;
 		while (index < flat.length) {
 			const group = flat[index].group;
@@ -1000,8 +1038,9 @@
 				index++;
 				continue;
 			}
+			const key = keyOf(flat[index]);
 			const lines: LineRef[] = [];
-			while (index < flat.length && flat[index].group?.id === group.id) {
+			while (index < flat.length && keyOf(flat[index]) === key) {
 				const ref = flat[index];
 				lines.push({
 					session_id: ref.session_id,
@@ -1014,6 +1053,10 @@
 			out.push({ group: { ...group }, lines });
 		}
 		return out;
+	}
+
+	function newInstanceId(): string {
+		return `i-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 	}
 
 	let scrapbookFlat = $derived(scrapbook ? flattenEntries(scrapbook.lines) : []);
@@ -1088,9 +1131,11 @@
 
 	/**
 	 * Rename every section of ``type`` so the first is ``Type`` (when alone) or
-	 * ``Type 1``, ``Type 2``… as soon as there is more than one.
+	 * ``Type 1``, ``Type 2``… as soon as there is more than one. ``other`` is
+	 * excluded: it is named by hand.
 	 */
 	function renumberSections(lines: LineRef[], type: string): LineRef[] {
+		if (type === 'other') return lines;
 		const ids: string[] = [];
 		for (const ref of lines) {
 			if (ref.group?.type === type && !ids.includes(ref.group.id)) ids.push(ref.group.id);
@@ -1114,7 +1159,7 @@
 		const high = Math.max(...indices);
 		const id = `g-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 		let lines = scrapbookFlat.map((ref, index) =>
-			index >= low && index <= high ? { ...ref, group: { id, type } } : ref
+			index >= low && index <= high ? { ...ref, group: { id, type, instance: id } } : ref
 		);
 		lines = renumberSections(lines, type);
 		saveLines(lines);
