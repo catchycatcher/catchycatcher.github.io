@@ -183,7 +183,7 @@
 	}
 
 	function groupBubbleClass(type: string): string {
-		return `w-fit max-w-full select-none rounded-xl border px-2.5 py-1 text-left text-sm font-medium leading-snug ${sectionStyle(type)}`;
+		return `w-fit max-w-full break-words select-none rounded-xl border px-2.5 py-1 text-left text-sm font-medium leading-snug ${sectionStyle(type)}`;
 	}
 
 	function onGroupClick(indices: number[], event: MouseEvent) {
@@ -389,9 +389,8 @@
 		return `w-fit max-w-full break-words select-none rounded-xl border px-2.5 py-1 text-left text-sm leading-snug transition-colors ${state}`;
 	}
 
-	function dragStart(event: DragEvent, index: number) {
+	function writeDragPayload(event: DragEvent, indices: number[]) {
 		if (!event.dataTransfer) return;
-		const indices = selectedIndices(index);
 		if (dragLine) {
 			const refs = indices.map((item) => dragLine(item)).filter((ref) => ref != null);
 			if (!refs.length) return;
@@ -401,6 +400,23 @@
 			event.dataTransfer.setData('application/x-catchy-indices', JSON.stringify(indices));
 			event.dataTransfer.effectAllowed = 'move';
 		}
+	}
+
+	function dragStart(event: DragEvent, index: number) {
+		writeDragPayload(event, selectedIndices(index));
+	}
+
+	/** Dragging a group bubble moves every line inside it. */
+	function dragGroupStart(event: DragEvent, indices: number[]) {
+		writeDragPayload(event, indices);
+		if (allowReorder && !dragLine) {
+			selected = [...indices];
+			anchor = indices[0];
+		}
+	}
+
+	function lineText(index: number): string {
+		return lines[index]?.text ?? '';
 	}
 
 	function rowStart(element: HTMLElement): number {
@@ -682,13 +698,26 @@
 					<div data-row data-line-start={row.indices[0]} class="flex items-center gap-1">
 						<button
 							type="button"
+							draggable={Boolean(dragLine || allowReorder)}
+							ondragstart={(event) => dragGroupStart(event, row.indices)}
+							ondragend={clearDrop}
 							onclick={(event) => onGroupClick(row.indices, event)}
 							ondblclick={(event) => onGroupDoubleClick(row.id, event)}
-							title="Double-click to show the lines inside"
+							title="Double-click to edit the lines inside"
 							class={groupBubbleClass(row.type)}
 						>
-							{sectionLabel(row.type)} · {row.indices.length}
-							<span class="ml-1 text-xs opacity-70">{expandedGroups[row.id] ? '▾' : '▸'}</span>
+							<span
+								class="mb-0.5 block text-[10px] font-semibold tracking-wide uppercase opacity-70"
+							>
+								{sectionLabel(row.type)}
+							</span>
+							{#if expandedGroups[row.id]}
+								<span class="block text-xs opacity-60">Double-click to close</span>
+							{:else}
+								{#each row.indices as lineIndex (lineIndex)}
+									<span class="block">{lineText(lineIndex)}</span>
+								{/each}
+							{/if}
 						</button>
 						{#if onUngroup}
 							<button
