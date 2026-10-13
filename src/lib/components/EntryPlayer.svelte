@@ -90,6 +90,13 @@
 		bridge: 'border-green-400 bg-green-200 text-green-900',
 		other: 'border-neutral-300 bg-neutral-200 text-neutral-700'
 	};
+	/** The bubbles inside an open section sit on its colour as white pills. */
+	const SECTION_INNER_STYLES: Record<string, string> = {
+		chorus: 'border-orange-400 bg-white text-orange-900',
+		verse: 'border-rose-400 bg-white text-rose-900',
+		bridge: 'border-green-400 bg-white text-green-900',
+		other: 'border-neutral-400 bg-white text-neutral-800'
+	};
 	const SECTIONS: { type: string; label: string }[] = [
 		{ type: 'chorus', label: 'Chorus' },
 		{ type: 'verse', label: 'Verse' },
@@ -230,12 +237,17 @@
 		return SECTION_STYLES[type] ?? SECTION_STYLES.other;
 	}
 
+	function sectionInnerStyle(type: string): string {
+		return SECTION_INNER_STYLES[type] ?? SECTION_INNER_STYLES.other;
+	}
+
 	function sectionLabel(type: string): string {
 		return SECTIONS.find((section) => section.type === type)?.label ?? 'Other';
 	}
 
-	function groupBubbleClass(type: string): string {
-		return `w-fit max-w-full break-words select-none rounded-xl border px-2.5 py-1 text-left text-sm font-medium leading-snug ${sectionStyle(type)}`;
+	/** The coloured block that wraps a section's label and its lines. */
+	function groupWrapClass(type: string): string {
+		return `w-fit max-w-full rounded-xl border px-2 py-1.5 ${sectionStyle(type)}`;
 	}
 
 	function onGroupDoubleClick(id: string, event: MouseEvent) {
@@ -441,11 +453,12 @@
 			return 'w-full touch-none break-words select-none rounded-md px-1 py-1 text-left text-sm leading-snug text-neutral-700';
 		}
 		const group = lines[index]?.group;
-		const inOpenGroup = group ? Boolean(expandedGroups[group.id]) : false;
+		const groupKey = group?.instance ?? group?.id;
+		const inOpenGroup = groupKey ? Boolean(expandedGroups[groupKey]) : false;
 		const isSelected = selected.includes(index);
 		const isActive = index === activeLine;
 		let state = inOpenGroup
-			? sectionStyle(group?.type ?? 'other')
+			? sectionInnerStyle(group?.type ?? 'other')
 			: 'border-neutral-200 bg-white/60 hover:bg-white';
 		if (isSelected && isActive) {
 			// Yellow outline replaces the blue one (no double outline).
@@ -789,7 +802,7 @@
 			{#if row.kind === 'line'}
 				{@render lineRow(row.index)}
 			{:else}
-				<div role="listitem" class="flex flex-col gap-1">
+				<div role="listitem" class={groupWrapClass(row.type)}>
 					<div
 						data-row
 						data-group-row="true"
@@ -801,7 +814,7 @@
 								<input
 									bind:value={groupNameDraft}
 									aria-label="Section name"
-									class="min-w-0 rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm focus:border-neutral-500 focus:outline-none"
+									class="min-w-0 rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm text-neutral-900 focus:border-neutral-500 focus:outline-none"
 								/>
 								<button
 									type="submit"
@@ -812,7 +825,7 @@
 								<button
 									type="button"
 									onclick={cancelGroupRename}
-									class="shrink-0 rounded-md px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-100"
+									class="shrink-0 rounded-md px-2 py-1 text-xs text-neutral-500 hover:bg-black/10"
 								>
 									Cancel
 								</button>
@@ -823,42 +836,36 @@
 								draggable={Boolean(dragLine || allowReorder)}
 								ondragstart={(event) => dragGroupStart(event, row.indices)}
 								ondragend={clearDrop}
-								ondblclick={(event) => onGroupDoubleClick(row.id, event)}
+								ondblclick={(event) => onGroupDoubleClick(row.instance, event)}
 								title="Double-click to show the lines inside"
-								class={groupBubbleClass(row.type)}
+								class="flex min-w-0 cursor-grab items-center gap-1"
 							>
-								<span class="mb-0.5 flex items-center gap-1">
-									<span class="text-[10px] font-semibold tracking-wide uppercase opacity-70">
-										{row.name}
-									</span>
-									{#if row.type === 'other' && onRenameGroup}
-										<button
-											type="button"
-											onclick={(event) => {
-												event.stopPropagation();
-												beginGroupRename(row.id, row.name);
-											}}
-											title="Rename section"
-											aria-label="Rename section"
-											class="rounded px-1 text-[11px] leading-none hover:bg-black/10"
-										>
-											✎
-										</button>
-									{/if}
+								<span class="text-[11px] font-semibold tracking-wide uppercase">
+									{row.name}
 								</span>
-								{#if expandedGroups[row.id]}
-									<span class="block text-xs opacity-60">Double-click to close</span>
-								{:else}
-									{#each row.indices as lineIndex (lineIndex)}
-										<span class="block">{lineText(lineIndex)}</span>
-									{/each}
+								{#if row.type === 'other' && onRenameGroup}
+									<button
+										type="button"
+										onclick={(event) => {
+											event.stopPropagation();
+											beginGroupRename(row.id, row.name);
+										}}
+										title="Rename section"
+										aria-label="Rename section"
+										class="rounded px-1 text-[11px] leading-none hover:bg-black/10"
+									>
+										✎
+									</button>
 								{/if}
+								<span class="text-[11px] opacity-60"
+									>{expandedGroups[row.instance] ? '▾' : '▸'}</span
+								>
 							</div>
 							{#if onUngroup}
 								<button
 									type="button"
 									onclick={() => onUngroup(row.id)}
-									class="shrink-0 rounded px-1.5 py-0.5 text-xs text-neutral-400 hover:bg-neutral-200 hover:text-neutral-700"
+									class="ml-auto shrink-0 rounded px-1.5 py-0.5 text-xs text-neutral-500 hover:bg-black/10"
 								>
 									Ungroup
 								</button>
@@ -868,16 +875,22 @@
 									type="button"
 									onclick={() => onRemoveGroup(row.indices)}
 									title="Delete the whole section"
-									class="shrink-0 rounded px-1.5 py-0.5 text-xs text-neutral-400 hover:bg-red-50 hover:text-red-600"
+									class="shrink-0 rounded px-1.5 py-0.5 text-xs text-neutral-500 hover:bg-red-500/15 hover:text-red-700"
 								>
 									×
 								</button>
 							{/if}
 						{/if}
 					</div>
-					{#if expandedGroups[row.id]}
-						<div class="flex flex-col gap-2.5 pl-3">
+					{#if expandedGroups[row.instance]}
+						<div class="mt-1.5 flex flex-col gap-1 pl-2">
 							{#each row.indices as lineIndex (lineIndex)}{@render lineRow(lineIndex)}{/each}
+						</div>
+					{:else}
+						<div class="mt-2 flex flex-col gap-3 pl-2">
+							{#each row.indices as lineIndex (lineIndex)}
+								<span class="block text-sm leading-snug">{lineText(lineIndex)}</span>
+							{/each}
 						</div>
 					{/if}
 				</div>
