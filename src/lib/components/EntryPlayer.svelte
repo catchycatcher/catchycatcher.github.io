@@ -120,10 +120,11 @@
 	};
 	/** The buttons shown when lines are selected. */
 	const SECTIONS: { type: string; label: string }[] = [
+		{ type: 'chorus', label: 'Chorus' },
+		{ type: 'verse', label: 'Verse' },
+		{ type: 'bridge', label: 'Bridge' },
 		{ type: 'pre-chorus', label: 'Pre-chorus' },
 		{ type: 'tag', label: 'Tag' },
-		{ type: 'intro', label: 'Intro' },
-		{ type: 'outro', label: 'Outro' },
 		{ type: 'other', label: 'Other' }
 	];
 
