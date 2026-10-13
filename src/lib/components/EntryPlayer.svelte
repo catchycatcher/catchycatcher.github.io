@@ -30,6 +30,7 @@
 	type Line = { text: string; start: number; end: number; words: Word[] };
 
 	let audio = $state<HTMLAudioElement | null>(null);
+	let rootEl = $state<HTMLDivElement | null>(null);
 	let listEl = $state<HTMLDivElement | null>(null);
 	let playing = $state(false);
 	let currentTime = $state(0);
@@ -38,6 +39,8 @@
 	let selected = $state<number[]>([]);
 	/** Where a shift-click range starts from. */
 	let anchor = $state<number | null>(null);
+	/** Insertion point for a drag, drawn as a line between bubbles. */
+	let dropIndex = $state<number | null>(null);
 
 	/** Give every word a start/end, deriving them when the server omits them. */
 	function resolve(rawLines: LyricLine[]): Line[] {
@@ -103,6 +106,20 @@
 		void current;
 	});
 
+	// Clicking anywhere outside this player deselects its bubbles.
+	$effect(() => {
+		const onPointerDown = (event: PointerEvent) => {
+			if (!selectable) return;
+			const target = event.target;
+			if (!rootEl || !(target instanceof Node)) return;
+			if (rootEl.contains(target)) return;
+			selected = [];
+			anchor = null;
+		};
+		window.addEventListener('pointerdown', onPointerDown, true);
+		return () => window.removeEventListener('pointerdown', onPointerDown, true);
+	});
+
 	// Keep the line being sung in view as playback moves along.
 	$effect(() => {
 		const index = activeLine;
@@ -150,10 +167,7 @@
 	}
 
 	function onLineClick(index: number, event: MouseEvent) {
-		if (!selectable) {
-			playFrom(lines[index].start);
-			return;
-		}
+		if (!selectable) return;
 		if (event.shiftKey && anchor !== null) {
 			const low = Math.min(anchor, index);
 			const high = Math.max(anchor, index);
@@ -183,11 +197,31 @@
 		}
 	}
 
-	function dropAt(event: DragEvent, index: number) {
+	/** The gap nearest the pointer: 0 = before the first bubble, n = after the last. */
+	function insertionIndex(clientY: number): number {
+		if (!listEl) return lines.length;
+		const rows = [...listEl.querySelectorAll<HTMLElement>('[data-row]')];
+		for (let index = 0; index < rows.length; index++) {
+			const rect = rows[index].getBoundingClientRect();
+			if (clientY < rect.top + rect.height / 2) return index;
+		}
+		return rows.length;
+	}
+
+	function onListDragOver(event: DragEvent) {
+		if (!droppable) return;
+		event.preventDefault();
+		dropIndex = insertionIndex(event.clientY);
+	}
+
+	function onListDrop(event: DragEvent) {
+		if (!droppable) return;
+		event.preventDefault();
+		const index = dropIndex ?? lines.length;
+		dropIndex = null;
+
 		const external = event.dataTransfer?.getData('application/x-catchy-lines');
 		if (external && onDropLines) {
-			event.preventDefault();
-			event.stopPropagation();
 			try {
 				const refs: unknown = JSON.parse(external);
 				if (Array.isArray(refs)) onDropLines(refs, index);
@@ -196,10 +230,9 @@
 			}
 			return;
 		}
+
 		const internal = event.dataTransfer?.getData('application/x-catchy-indices');
 		if (internal && onMoveLines) {
-			event.preventDefault();
-			event.stopPropagation();
 			try {
 				const from: unknown = JSON.parse(internal);
 				if (Array.isArray(from)) onMoveLines(from as number[], index);
@@ -216,7 +249,7 @@
 	}
 </script>
 
-<div class="space-y-3 rounded-xl border border-neutral-200 bg-neutral-50 p-3">
+<div bind:this={rootEl} class="space-y-3 rounded-xl border border-neutral-200 bg-neutral-50 p-3">
 	<div class="flex items-center gap-3">
 		<button
 			type="button"
@@ -263,41 +296,31 @@
 		role="list"
 		aria-label="Lines"
 		class="flex max-h-72 flex-col gap-1 overflow-y-auto"
-		ondragover={(event) => {
-			if (droppable) event.preventDefault();
-		}}
-		ondrop={(event) => {
-			if (droppable) dropAt(event, lines.length);
-		}}
+		ondragover={onListDragOver}
+		ondragleave={() => (dropIndex = null)}
+		ondrop={onListDrop}
 	>
 		{#if lines.length === 0}
 			<p class="px-1 py-2 text-sm text-neutral-400">No words detected in this take.</p>
 		{/if}
 		{#each lines as line, index (index)}
-			<div
-				role="listitem"
-				class="flex items-center gap-1 self-start"
-				ondragover={(event) => {
-					if (droppable) {
-						event.preventDefault();
-						event.stopPropagation();
-					}
-				}}
-				ondrop={(event) => dropAt(event, index)}
-			>
+			{#if droppable && dropIndex === index}
+				<div class="h-0.5 rounded-full bg-amber-500" aria-hidden="true"></div>
+			{/if}
+			<div role="listitem" data-row class="flex items-center gap-1 self-start">
 				<button
 					type="button"
 					data-active={index === activeLine}
-					data-selected={selected.includes(index)}
+					data-line
 					draggable={Boolean(dragLine || allowReorder)}
 					ondragstart={(event) => dragStart(event, index)}
+					ondragend={() => (dropIndex = null)}
 					onclick={(event) => onLineClick(index, event)}
-					class="w-fit max-w-full rounded-xl border px-2.5 py-1 text-left text-sm leading-snug transition-colors {index ===
-					activeLine
-						? 'border-neutral-900 bg-white'
-						: selected.includes(index)
-							? 'border-amber-400 bg-amber-50'
-							: 'border-neutral-200 bg-white/60 hover:bg-white'}"
+					class="w-fit max-w-full rounded-xl border px-2.5 py-1 text-left text-sm leading-snug transition-colors {selected.includes(
+						index
+					)
+						? 'border-amber-400 bg-amber-50'
+						: 'border-neutral-200 bg-white/60 hover:bg-white'}"
 				>
 					{#each line.words as word, wordIndex (wordIndex)}
 						<span
@@ -322,6 +345,9 @@
 				{/if}
 			</div>
 		{/each}
+		{#if droppable && dropIndex === lines.length && lines.length > 0}
+			<div class="h-0.5 rounded-full bg-amber-500" aria-hidden="true"></div>
+		{/if}
 	</div>
 
 	<audio

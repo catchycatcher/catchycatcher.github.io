@@ -536,21 +536,32 @@
 	let renderInSync = $derived(!renderPending && renderMatchesLines(scrapbook));
 	let scrapbookLoading = $derived(Boolean(scrapbook?.lines.length) && !renderInSync);
 
+	function sourceKey(ref: { session_id: string; take_id: string; line_index: number }): string {
+		return `${ref.session_id}|${ref.take_id}|${ref.line_index}`;
+	}
+
 	/**
-	 * The bubbles to show, always in the scrapbook's line order. Each line uses
-	 * the rendered timings when the render is current, and plain text while a
-	 * change is still rendering (so reorders show up immediately).
+	 * The bubbles to show, always in the scrapbook's line order. Each line reuses
+	 * its rendered words when the render has one, so a reorder only moves bubbles
+	 * around — it never restyles them. Lines with no render yet (e.g. freshly
+	 * added) fall back to a plain text bubble until the mix catches up.
 	 */
 	function scrapbookLinesFor(): LyricLine[] {
 		const book = scrapbook;
 		if (!book) return [];
-		if (renderInSync && book.render?.timeline?.length) return book.render.timeline;
-		return book.lines.map((ref) => ({
-			bpm: book.bpm,
-			'start time': 0,
-			'end time': 0,
-			words: [{ word: lineLabel(ref), start: 0, end: 0, length: 0 }]
-		}));
+		const rendered: Record<string, LyricLine> = {};
+		for (const line of book.render?.timeline ?? []) {
+			if (line.source) rendered[sourceKey(line.source)] = line;
+		}
+		return book.lines.map(
+			(ref) =>
+				rendered[sourceKey(ref)] ?? {
+					bpm: book.bpm,
+					'start time': 0,
+					'end time': 0,
+					words: [{ word: lineLabel(ref), start: 0, end: 0, length: 0 }]
+				}
+		);
 	}
 
 	let scrapbookLines = $derived(scrapbookLinesFor());
