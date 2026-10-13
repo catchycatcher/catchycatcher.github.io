@@ -460,6 +460,17 @@ export async function renameScribble(url: string, scribbleId: string, name: stri
 	}
 }
 
+/** Pin (or unpin) a scribble so it sorts to the top. */
+export async function pinScribble(url: string, scribbleId: string, pinned: boolean): Promise<void> {
+	const response = await fetch(
+		`${base(url)}/scribbles/${encodeURIComponent(scribbleId)}?bookmarked=${pinned ? 'true' : 'false'}`,
+		{ method: 'PATCH', headers: { accept: 'application/json' } }
+	);
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when pinning the scribble.`);
+	}
+}
+
 /** Delete a scribble and its files. */
 export async function deleteScribble(url: string, scribbleId: string): Promise<void> {
 	const response = await fetch(`${base(url)}/scribbles/${encodeURIComponent(scribbleId)}`, {

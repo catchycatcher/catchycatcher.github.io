@@ -15,6 +15,7 @@
 		getTakeResult,
 		listScrapbooks,
 		listScribbles,
+		patchSessionName,
 		processScribble,
 		processTake,
 		renderScrapbook,
@@ -37,6 +38,7 @@
 	} from '#lib/connection.svelte.ts';
 	import { carve, lyricsPayload, mergeSelected } from '#lib/lyrics.ts';
 	import { newEntryName } from '#lib/session.ts';
+	import { markSessionOpened } from '#lib/recent.ts';
 	import { extensionForMime, Recorder } from '#lib/recorder.svelte.ts';
 	import { SharedMic } from '#lib/micShare.svelte.ts';
 	import EntryPlayer from '#lib/components/EntryPlayer.svelte';
@@ -70,6 +72,31 @@
 	let sessionId = $state('');
 	let sessionName = $state('');
 	let error = $state<string | null>(null);
+
+	/** Inline rename of the session name in the header. */
+	let renamingSession = $state(false);
+	let sessionNameDraft = $state('');
+
+	function beginSessionRename() {
+		renamingSession = true;
+		sessionNameDraft = sessionName;
+	}
+
+	async function commitSessionRename(event: SubmitEvent) {
+		event.preventDefault();
+		const name = sessionNameDraft.trim();
+		renamingSession = false;
+		const url = api.url;
+		if (!name || name === sessionName || !url || !sessionId) return;
+		const previous = sessionName;
+		sessionName = name;
+		try {
+			await patchSessionName(url, sessionId, name);
+		} catch {
+			sessionName = previous;
+			error = 'Could not rename the session.';
+		}
+	}
 
 	/** The journal: one entry per take, newest first. */
 	let entries = $state<Entry[]>([]);
@@ -144,7 +171,9 @@
 
 	$effect(() => {
 		bootstrap(page.url.searchParams);
-		sessionId = page.url.searchParams.get('id') ?? '';
+		const id = page.url.searchParams.get('id') ?? '';
+		sessionId = id;
+		if (id) markSessionOpened(id);
 		ready = true;
 	});
 
@@ -1280,7 +1309,37 @@
 			>
 				Catchy Catcher
 			</a>
-			<h1 class="truncate text-xl font-semibold tracking-tight">{sessionName || 'Session'}</h1>
+			{#if renamingSession}
+				<form onsubmit={commitSessionRename} class="mt-0.5 flex items-center gap-1">
+					<input
+						bind:value={sessionNameDraft}
+						aria-label="Session name"
+						class="min-w-0 rounded-md border border-neutral-300 bg-white px-2 py-1 text-lg font-semibold focus:border-neutral-500 focus:outline-none"
+					/>
+					<button
+						type="submit"
+						class="shrink-0 rounded-md bg-neutral-900 px-2 py-1 text-xs font-medium text-white hover:bg-neutral-800"
+					>
+						Save
+					</button>
+					<button
+						type="button"
+						onclick={() => (renamingSession = false)}
+						class="shrink-0 rounded-md px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-100"
+					>
+						Cancel
+					</button>
+				</form>
+			{:else}
+				<button
+					type="button"
+					onclick={beginSessionRename}
+					title="Rename session"
+					class="block max-w-full truncate text-left text-xl font-semibold tracking-tight hover:text-neutral-600"
+				>
+					{sessionName || 'Session'}
+				</button>
+			{/if}
 		</div>
 		<div class="flex shrink-0 items-center gap-3">
 			<a href={resolve('/')} class="text-xs text-neutral-500 hover:text-neutral-900">

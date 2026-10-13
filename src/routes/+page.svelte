@@ -14,6 +14,7 @@
 		establish,
 		getScribble,
 		listScribbles,
+		pinScribble,
 		processScribble,
 		refreshSessions,
 		renameScribble as renameScribbleApi,
@@ -31,6 +32,7 @@
 	import { carve, lyricsPayload, mergeSelected } from '#lib/lyrics.ts';
 	import { parseShareInput, toHref } from '#lib/share.ts';
 	import { formatSessionDate, newEntryName, newTakeId, type Session } from '#lib/session.ts';
+	import { recentSessions } from '#lib/recent.ts';
 	import { extensionForMime, Recorder } from '#lib/recorder.svelte.ts';
 	import { MicSharer } from '#lib/micShare.svelte.ts';
 	import EntryPlayer from '#lib/components/EntryPlayer.svelte';
@@ -44,6 +46,7 @@
 		name: string;
 		kind: 'audio' | 'text';
 		status: ScribbleStatus;
+		pinned: boolean;
 		lyrics: LyricLine[];
 		error?: string | null;
 	};
@@ -98,8 +101,17 @@
 		ready = true;
 	});
 
-	// Our generated ids sort chronologically, so newest sessions come first.
-	let sessions = $derived([...connection.sessions].sort((a, b) => (a.id < b.id ? 1 : -1)));
+	// Newest-opened sessions come first, then most recently changed, then id.
+	let sessions = $derived.by(() => {
+		const recent = recentSessions();
+		return [...connection.sessions].sort((a, b) => {
+			const opened = (recent[b.id] ?? 0) - (recent[a.id] ?? 0);
+			if (opened !== 0) return opened;
+			const updated = (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '');
+			if (updated !== 0) return updated;
+			return a.id < b.id ? 1 : -1;
+		});
+	});
 
 	$effect(() => {
 		if (ready && !api.url && connection.status !== 'checking') inputEl?.focus();
@@ -164,6 +176,7 @@
 				name: item.name?.trim() || item.take_id,
 				kind: item.kind === 'text' ? 'text' : 'audio',
 				status: normalizeScribbleStatus(item.status),
+				pinned: Boolean(item.bookmarked),
 				lyrics: [],
 				error: item.error ?? null
 			}));
@@ -205,7 +218,16 @@
 		const id = newTakeId();
 		const name = newEntryName();
 		scribbles = [
-			{ id, index, name, kind: 'audio', status: 'processing', lyrics: [], error: null },
+			{
+				id,
+				index,
+				name,
+				kind: 'audio',
+				status: 'processing',
+				pinned: false,
+				lyrics: [],
+				error: null
+			},
 			...scribbles
 		];
 
@@ -374,6 +396,7 @@
 					name: created.name?.trim() || created.take_id,
 					kind: 'text',
 					status: 'done',
+					pinned: false,
 					lyrics: textLinesToLyrics(['']),
 					error: null
 				},
@@ -466,6 +489,31 @@
 			scribbles = scribbles.filter((candidate) => candidate.id !== scribble.id);
 		} catch (deleteError) {
 			scribbleError = deleteError instanceof Error ? deleteError.message : 'Could not delete.';
+		}
+	}
+
+	/** Pinned scribbles sort to the top. */
+	let sortedScribbles = $derived.by(() =>
+		[...scribbles].sort((a, b) => {
+			if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+			return b.index - a.index;
+		})
+	);
+
+	async function togglePin(scribble: Scribble) {
+		const url = api.url;
+		const next = !scribble.pinned;
+		scribbles = scribbles.map((candidate) =>
+			candidate.id === scribble.id ? { ...candidate, pinned: next } : candidate
+		);
+		if (!url) return;
+		try {
+			await pinScribble(url, scribble.id, next);
+		} catch (pinError) {
+			scribbles = scribbles.map((candidate) =>
+				candidate.id === scribble.id ? { ...candidate, pinned: !next } : candidate
+			);
+			scribbleError = pinError instanceof Error ? pinError.message : 'Could not pin the scribble.';
 		}
 	}
 
@@ -877,7 +925,7 @@
 							</p>
 						{:else}
 							<ul class="space-y-2">
-								{#each scribbles as scribble (scribble.id)}
+								{#each sortedScribbles as scribble (scribble.id)}
 									<li
 										class="space-y-3 rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3"
 									>
@@ -928,6 +976,28 @@
 												</div>
 											{/if}
 											<div class="flex shrink-0 items-center gap-1">
+												<button
+													onclick={() => togglePin(scribble)}
+													title={scribble.pinned ? 'Unpin scribble' : 'Pin to top'}
+													aria-label={scribble.pinned ? 'Unpin scribble' : 'Pin to top'}
+													class="rounded-md px-1.5 py-1 text-sm {scribble.pinned
+														? 'text-amber-500'
+														: 'text-neutral-300 hover:text-neutral-500'}"
+												>
+													<svg
+														viewBox="0 0 24 24"
+														class="size-4"
+														fill={scribble.pinned ? 'currentColor' : 'none'}
+														stroke="currentColor"
+														stroke-width="2"
+														stroke-linecap="round"
+														stroke-linejoin="round"
+														aria-hidden="true"
+													>
+														<path d="M12 17v5" />
+														<path d="M9 3h6l-1 6 3 3H7l3-3-1-6Z" />
+													</svg>
+												</button>
 												{#if scribble.status === 'recorded'}
 													<button
 														onclick={() => processScribbleEntry(scribble)}
@@ -976,6 +1046,7 @@
 												src={scribbleAudio(scribble)}
 												lyrics={scribble.lyrics}
 												framed={false}
+												selectable
 												downloadName={scribble.name}
 												onEditLine={(lineIndex, text) =>
 													editScribbleLine(scribble, lineIndex, text)}
@@ -1012,7 +1083,7 @@
 				<div class="space-y-2 text-center">
 					<h1 class="text-3xl font-semibold tracking-tight">Catchy Catcher</h1>
 					<p class="text-sm text-neutral-500">
-						Enter the share code for your Gradio app to get started.
+						Enter the share code from the Catchy Catcher desktop app to get started.
 					</p>
 				</div>
 

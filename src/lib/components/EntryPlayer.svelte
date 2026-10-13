@@ -10,6 +10,7 @@
 		downloadName = 'audio',
 		dragLine,
 		allowReorder = false,
+		selectable = false,
 		onDropLines,
 		onMoveLines,
 		onRemove,
@@ -38,6 +39,8 @@
 		lineRef?: (lineIndex: number) => unknown | null;
 		/** Allow dragging the selection to reorder within this player. */
 		allowReorder?: boolean;
+		/** Allow selecting lines (e.g. to reline) without drag-reorder. */
+		selectable?: boolean;
 		/** A selection of lines dropped in at ``index`` (``group`` = section to join). */
 		onDropLines?: (refs: unknown[], index: number, group?: Group | null) => void;
 		/** Move the selected line indices to sit before ``index``. */
@@ -163,7 +166,7 @@
 
 	let lines = $derived(resolve(lyrics));
 	let playable = $derived(Boolean(src));
-	let selectable = $derived(Boolean(dragLine || allowReorder));
+	let canSelect = $derived(Boolean(dragLine || allowReorder || selectable));
 	let droppable = $derived(Boolean(onDropLines || onMoveLines));
 	let activeLine = $derived(playable && playing ? findLine(lines, currentTime) : -1);
 
@@ -288,7 +291,7 @@
 	// Clicking anywhere outside this player deselects its bubbles.
 	$effect(() => {
 		const onPointerDown = (event: PointerEvent) => {
-			if (!selectable) return;
+			if (!canSelect) return;
 			const target = event.target;
 			if (!rootEl || !(target instanceof Node)) return;
 			if (rootEl.contains(target)) return;
@@ -357,15 +360,30 @@
 			onMergeSelected([...indices].sort((a, b) => a - b));
 			return;
 		}
-		if (!selectable) return;
+		if (!canSelect) return;
 		if (event.shiftKey && anchor !== null) {
 			const low = Math.min(anchor, index);
 			const high = Math.max(anchor, index);
 			selected = Array.from({ length: high - low + 1 }, (_unused, step) => low + step);
 			return;
 		}
+		// Clicking the only selected line again clears the selection.
+		if (selected.length === 1 && selected[0] === index) {
+			selected = [];
+			anchor = null;
+			return;
+		}
 		selected = [index];
 		anchor = index;
+	}
+
+	/** Clicking the empty space of the list clears the selection. */
+	function onListClick(event: MouseEvent) {
+		if (!canSelect) return;
+		const target = event.target as HTMLElement | null;
+		if (target?.closest('button, input, a, [data-group-row]')) return;
+		selected = [];
+		anchor = null;
 	}
 
 	function onLineDoubleClick(index: number, event: MouseEvent) {
@@ -770,7 +788,6 @@
 					</button>
 				{/each}
 			{:else if groupList.length}
-				<span class="text-xs text-neutral-400">Sections</span>
 				{#each groupList as group (group.id)}
 					<button
 						type="button"
@@ -788,11 +805,14 @@
 		</div>
 	{/if}
 
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 	<div
 		bind:this={listEl}
 		role="list"
 		aria-label="Lines"
 		class="relative flex flex-col gap-1 select-none"
+		onclick={onListClick}
 		ondragover={onListDragOver}
 		ondragleave={onListDragLeave}
 		ondrop={onListDrop}
@@ -877,7 +897,7 @@
 								>
 									<svg
 										viewBox="0 0 24 24"
-										class="size-3.5"
+										class="size-3.5 rotate-90"
 										fill="none"
 										stroke="currentColor"
 										stroke-width="2"
@@ -906,7 +926,7 @@
 						{/if}
 					</div>
 					{#if expandedGroups[row.instance]}
-						<div class="mt-1.5 flex flex-col gap-1 pl-2">
+						<div class="mt-1.5 flex flex-col gap-1 pl-1">
 							{#each row.indices as lineIndex (lineIndex)}{@render lineRow(lineIndex)}{/each}
 						</div>
 						<!-- Drop zone: land here to add at the end of the open section; below = after. -->
@@ -918,9 +938,13 @@
 							aria-hidden="true"
 						></div>
 					{:else}
-						<div class="mt-2 flex flex-col gap-3 pl-2">
+						<div class="mt-2 flex flex-col gap-3 pl-1">
 							{#each row.indices as lineIndex (lineIndex)}
-								<span class="block text-sm leading-snug">{lineText(lineIndex)}</span>
+								<span
+									class="block rounded px-1 text-sm leading-snug {lineIndex === activeLine
+										? 'bg-amber-200 text-neutral-900'
+										: ''}">{lineText(lineIndex)}</span
+								>
 							{/each}
 						</div>
 					{/if}
