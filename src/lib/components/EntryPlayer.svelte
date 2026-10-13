@@ -75,6 +75,20 @@
 		});
 	});
 
+	// Smooth highlighting: `timeupdate` only fires ~4x/second, which reads as
+	// laggy, so follow the playhead every animation frame while playing.
+	$effect(() => {
+		if (!playing) return;
+		const element = audio;
+		let frame = 0;
+		const tick = () => {
+			if (element) currentTime = element.currentTime;
+			frame = requestAnimationFrame(tick);
+		};
+		frame = requestAnimationFrame(tick);
+		return () => cancelAnimationFrame(frame);
+	});
+
 	function toggle() {
 		if (!audio) return;
 		if (audio.paused) void audio.play();
@@ -133,7 +147,7 @@
 		</span>
 	</div>
 
-	<div bind:this={listEl} class="flex max-h-72 flex-col gap-2 overflow-y-auto">
+	<div bind:this={listEl} class="flex max-h-72 flex-col gap-1 overflow-y-auto">
 		{#if lines.length === 0}
 			<p class="px-1 py-2 text-sm text-neutral-400">No words detected in this take.</p>
 		{/if}
@@ -142,7 +156,7 @@
 				type="button"
 				data-active={index === activeLine}
 				onclick={() => playFrom(line.start)}
-				class="rounded-2xl border px-3 py-2 text-left text-sm leading-relaxed transition-colors {index ===
+				class="w-fit max-w-full self-start rounded-xl border px-2.5 py-1 text-left text-sm leading-snug transition-colors {index ===
 				activeLine
 					? 'border-neutral-900 bg-white'
 					: 'border-neutral-200 bg-white/60 hover:bg-white'}"

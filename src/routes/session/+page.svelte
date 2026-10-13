@@ -37,7 +37,7 @@
 	let sessionName = $state('');
 	let error = $state<string | null>(null);
 
-	/** The journal: one entry per take, newest last. */
+	/** The journal: one entry per take, newest first. */
 	let entries = $state<Entry[]>([]);
 	let nextIndex = $state(1);
 
@@ -114,7 +114,7 @@
 				status: normalizeStatus(take.status),
 				lyrics: []
 			}));
-			loaded.sort((a, b) => a.index - b.index);
+			loaded.sort((a, b) => b.index - a.index);
 			entries = loaded;
 			nextIndex = (loaded[loaded.length - 1]?.index ?? 0) + 1;
 			error = null;
@@ -153,7 +153,6 @@
 		const localId = `local-${index}-${Math.random().toString(36).slice(2, 7)}`;
 		const name = newEntryName();
 		entries = [
-			...entries,
 			{
 				localId,
 				serverId: null,
@@ -162,7 +161,8 @@
 				status: process ? 'processing' : 'recorded',
 				lyrics: [],
 				error: null
-			}
+			},
+			...entries
 		];
 
 		const extension = extensionForMime(blob.type);
