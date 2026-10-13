@@ -963,12 +963,17 @@
 		const remaining = current.filter((_line, index) => !valid.includes(index));
 		let target = Math.max(0, Math.min(remaining.length, to - removedBefore));
 
-		// Dropping into a section joins it. A section dropped on another lands
-		// beside it; a line pulled out of a section becomes a plain line, while a
-		// section moved whole (or a whole linked instance) keeps its identity.
-		const movingHasSection = moving.some((ref) => ref.group);
+		const movingIds: string[] = [];
+		for (const ref of moving) {
+			if (ref.group?.id && !movingIds.includes(ref.group.id)) movingIds.push(ref.group.id);
+		}
+		// Moving a whole section (dragging its label/body) relocates it beside any
+		// section it is dropped on, keeping its own identity. Moving individual
+		// lines joins the section they are dropped in (or leaves one they left).
+		const wholeSections =
+			movingIds.length > 0 && movingIds.every((id) => wholeRunMoved(current, valid, id));
 		let destination = group ?? undefined;
-		if (destination && movingHasSection) {
+		if (destination && wholeSections) {
 			target = snapOutsideRun(remaining, target, destination);
 			destination = undefined;
 		}
@@ -1186,12 +1191,19 @@
 	function scrapbookLinesFor(): LyricLine[] {
 		const book = scrapbook;
 		if (!book) return [];
+		const timeline = book.render?.timeline ?? [];
+		// When the render is in sync it is one timeline entry per line occurrence,
+		// so index it directly — repeated copies of the same clip then each get
+		// their own time instead of collapsing onto one.
+		const byIndex = timeline.length === scrapbookFlat.length && renderMatchesLines(book);
 		const rendered: Record<string, LyricLine> = {};
-		for (const line of book.render?.timeline ?? []) {
-			if (line.source) rendered[sourceKey(line.source)] = line;
+		if (!byIndex) {
+			for (const line of timeline) {
+				if (line.source) rendered[sourceKey(line.source)] = line;
+			}
 		}
-		return scrapbookFlat.map((ref) => {
-			const base = rendered[sourceKey(ref)];
+		return scrapbookFlat.map((ref, index) => {
+			const base = byIndex ? timeline[index] : rendered[sourceKey(ref)];
 			const dataWords = ref.data?.words ?? [];
 			const label =
 				(ref.data?.text && ref.data.text.trim()) ||
@@ -1219,6 +1231,10 @@
 		chorus: 'Chorus',
 		verse: 'Verse',
 		bridge: 'Bridge',
+		'pre-chorus': 'Pre-chorus',
+		tag: 'Tag',
+		intro: 'Intro',
+		outro: 'Outro',
 		other: 'Other'
 	};
 
@@ -1246,13 +1262,15 @@
 	}
 
 	/** Group a contiguous run of scrapbook lines under a section type. */
-	function groupScrapbookLines(indices: number[], type: string) {
+	function groupScrapbookLines(indices: number[], type: string, name?: string) {
 		if (!scrapbook || !indices.length) return;
 		const low = Math.min(...indices);
 		const high = Math.max(...indices);
 		const id = `g-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 		let lines = scrapbookFlat.map((ref, index) =>
-			index >= low && index <= high ? { ...ref, group: { id, type, instance: id } } : ref
+			index >= low && index <= high
+				? { ...ref, group: { id, type, instance: id, ...(name ? { name } : {}) } }
+				: ref
 		);
 		lines = renumberSections(lines, type);
 		saveLines(lines);

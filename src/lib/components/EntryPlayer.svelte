@@ -57,7 +57,7 @@
 		/** Drag across words of a raw line to carve a bubble. */
 		onCarve?: (index: number, from: number, to: number) => void;
 		/** Group the selected lines under a section type (chorus/verse/bridge/other). */
-		onGroupLines?: (indices: number[], type: string) => void;
+		onGroupLines?: (indices: number[], type: string, name?: string) => void;
 		/** Ungroup one section instance (the given line indices). */
 		onUngroup?: (indices: number[]) => void;
 		/** Rename a section. */
@@ -86,11 +86,15 @@
 				indices: number[];
 		  };
 
-	/** Colours for the section groups: chorus orange, verse rose, bridge green, other grey. */
+	/** Colours for the section groups. */
 	const SECTION_STYLES: Record<string, string> = {
 		chorus: 'border-orange-400 bg-orange-200 text-orange-900',
 		verse: 'border-rose-400 bg-rose-200 text-rose-900',
 		bridge: 'border-green-400 bg-green-200 text-green-900',
+		'pre-chorus': 'border-purple-400 bg-purple-200 text-purple-900',
+		tag: 'border-yellow-400 bg-yellow-200 text-yellow-900',
+		intro: 'border-pink-400 bg-pink-200 text-pink-900',
+		outro: 'border-pink-400 bg-pink-200 text-pink-900',
 		other: 'border-neutral-300 bg-neutral-200 text-neutral-700'
 	};
 	/** The bubbles inside an open section sit on its colour as white pills. */
@@ -98,12 +102,28 @@
 		chorus: 'border-orange-400 bg-white text-orange-900',
 		verse: 'border-rose-400 bg-white text-rose-900',
 		bridge: 'border-green-400 bg-white text-green-900',
+		'pre-chorus': 'border-purple-400 bg-white text-purple-900',
+		tag: 'border-yellow-400 bg-white text-yellow-900',
+		intro: 'border-pink-400 bg-white text-pink-900',
+		outro: 'border-pink-400 bg-white text-pink-900',
 		other: 'border-neutral-400 bg-white text-neutral-800'
 	};
+	const SECTION_LABELS: Record<string, string> = {
+		chorus: 'Chorus',
+		verse: 'Verse',
+		bridge: 'Bridge',
+		'pre-chorus': 'Pre-chorus',
+		tag: 'Tag',
+		intro: 'Intro',
+		outro: 'Outro',
+		other: 'Other'
+	};
+	/** The buttons shown when lines are selected. */
 	const SECTIONS: { type: string; label: string }[] = [
-		{ type: 'chorus', label: 'Chorus' },
-		{ type: 'verse', label: 'Verse' },
-		{ type: 'bridge', label: 'Bridge' },
+		{ type: 'pre-chorus', label: 'Pre-chorus' },
+		{ type: 'tag', label: 'Tag' },
+		{ type: 'intro', label: 'Intro' },
+		{ type: 'outro', label: 'Outro' },
 		{ type: 'other', label: 'Other' }
 	];
 
@@ -245,7 +265,19 @@
 	}
 
 	function sectionLabel(type: string): string {
-		return SECTIONS.find((section) => section.type === type)?.label ?? 'Other';
+		return SECTION_LABELS[type] ?? 'Other';
+	}
+
+	/** Create a section from the selection (naming it first for "other"). */
+	function createSection(type: string) {
+		if (!onGroupLines || !selected.length) return;
+		if (type === 'other') {
+			const name = window.prompt('Name this section', 'Other');
+			if (name === null) return;
+			onGroupLines([...selected], type, name.trim() || 'Other');
+			return;
+		}
+		onGroupLines([...selected], type);
 	}
 
 	/** The coloured block that wraps a section's label and its lines. */
@@ -256,6 +288,14 @@
 	function toggleGroupOpen(id: string, event: MouseEvent) {
 		event.preventDefault();
 		expandedGroups[id] = !expandedGroups[id];
+	}
+
+	/** Select every line of a section (so playback starts there). */
+	function selectGroup(indices: number[], event: MouseEvent) {
+		event.stopPropagation();
+		if (!canSelect) return;
+		selected = [...indices];
+		anchor = indices[0];
 	}
 	let renamingGroup = $state<string | null>(null);
 	let groupNameDraft = $state('');
@@ -781,7 +821,7 @@
 				{#each SECTIONS as section (section.type)}
 					<button
 						type="button"
-						onclick={() => onGroupLines([...selected], section.type)}
+						onclick={() => createSection(section.type)}
 						class="rounded-xl border px-2.5 py-1 text-xs font-medium {sectionStyle(section.type)}"
 					>
 						{section.label}
@@ -938,7 +978,15 @@
 							aria-hidden="true"
 						></div>
 					{:else}
-						<div class="mt-2 flex flex-col gap-3 pl-1">
+						<!-- svelte-ignore a11y_no_static_element_interactions -->
+						<!-- svelte-ignore a11y_click_events_have_key_events -->
+						<div
+							class="mt-2 flex cursor-pointer flex-col gap-3 pl-1"
+							draggable={Boolean(dragLine || allowReorder)}
+							ondragstart={(event) => dragGroupStart(event, row.indices)}
+							ondragend={clearDrop}
+							onclick={(event) => selectGroup(row.indices, event)}
+						>
 							{#each row.indices as lineIndex (lineIndex)}
 								<span
 									class="block rounded px-1 text-sm leading-snug {lineIndex === activeLine
