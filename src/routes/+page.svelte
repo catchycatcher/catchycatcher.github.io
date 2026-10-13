@@ -21,6 +21,7 @@
 		retry,
 		scribbleAudioUrl,
 		startNewSession,
+		subscribeChanges,
 		updateScribbleLineText,
 		updateScribbleLyrics,
 		updateTextScribble,
@@ -70,6 +71,9 @@
 	let scribbleNameDraft = $state('');
 	/** Whether the whole Scribbles section is shown. */
 	let scribblesOpen = $state(true);
+	/** Whether the Sessions list is shown (collapsed by default on phones). */
+	let sessionsOpen = $state(true);
+	let sessionsDefaulted = false;
 
 	const recorder = new Recorder();
 	let segmentStartedAt = $state(0);
@@ -91,12 +95,37 @@
 		if (ready && !api.url && connection.status !== 'checking') inputEl?.focus();
 	});
 
+	// Sessions start collapsed on phones, open on bigger screens.
+	$effect(() => {
+		if (!ready || sessionsDefaulted) return;
+		sessionsDefaulted = true;
+		sessionsOpen = !window.matchMedia('(max-width: 767px)').matches;
+	});
+
 	// Scribbles are global: load them once per server.
 	$effect(() => {
 		const url = api.url;
 		if (!url || scribblesLoadedFor === url) return;
 		scribblesLoadedFor = url;
 		void loadScribbles(url);
+	});
+
+	// Live updates: refetch sessions and scribbles when another client writes.
+	$effect(() => {
+		const url = api.url;
+		if (!url) return;
+		let timer: number | undefined;
+		const stop = subscribeChanges(url, () => {
+			window.clearTimeout(timer);
+			timer = window.setTimeout(() => {
+				void refreshSessions();
+				void loadScribbles(url);
+			}, 500);
+		});
+		return () => {
+			window.clearTimeout(timer);
+			stop();
+		};
 	});
 
 	// Live timer while recording a scribble.
@@ -588,8 +617,31 @@
 				{/if}
 
 				<section class="space-y-3">
-					<div class="flex items-center justify-between">
-						<h2 class="text-xs font-medium tracking-wide text-neutral-500 uppercase">Sessions</h2>
+					<div class="flex items-center justify-between gap-2">
+						<button
+							type="button"
+							onclick={() => (sessionsOpen = !sessionsOpen)}
+							aria-expanded={sessionsOpen}
+							class="flex items-center gap-1"
+						>
+							<svg
+								viewBox="0 0 24 24"
+								class="size-4 text-neutral-400 transition-transform {sessionsOpen
+									? 'rotate-90'
+									: ''}"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								aria-hidden="true"
+							>
+								<path d="m9 6 6 6-6 6" />
+							</svg>
+							<span class="text-xs font-medium tracking-wide text-neutral-500 uppercase"
+								>Sessions</span
+							>
+						</button>
 						<button
 							onclick={refreshSessions}
 							disabled={connection.sessionsStatus === 'loading'}
@@ -599,95 +651,97 @@
 						</button>
 					</div>
 
-					{#if sessions.length === 0}
-						<p
-							class="rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-400"
-						>
-							{connection.sessionsStatus === 'loading'
-								? 'Loading…'
-								: 'No sessions yet. Create one to get started.'}
-						</p>
-					{:else}
-						<ul class="space-y-2">
-							{#each sessions as session (session.id)}
-								<li class="rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3">
-									{#if editingId === session.id}
-										<form onsubmit={handleRename} class="flex items-center gap-2">
-											<input
-												bind:value={nameDraft}
-												aria-label="Session name"
-												class="min-w-0 flex-1 rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 focus:border-neutral-500 focus:ring-2 focus:ring-neutral-200 focus:outline-none"
-											/>
-											<button
-												type="submit"
-												class="shrink-0 rounded-md bg-neutral-900 px-3 py-2 text-xs font-medium text-white hover:bg-neutral-800"
-											>
-												Save
-											</button>
-											<button
-												type="button"
-												onclick={cancelRename}
-												class="shrink-0 rounded-md px-3 py-2 text-xs text-neutral-600 hover:bg-neutral-100"
-											>
-												Cancel
-											</button>
-										</form>
-									{:else if confirmingId === session.id}
-										<div class="flex items-center justify-between gap-3">
-											<span class="text-sm text-neutral-700">Delete this session?</span>
-											<div class="flex shrink-0 items-center gap-2">
+					{#if sessionsOpen}
+						{#if sessions.length === 0}
+							<p
+								class="rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-400"
+							>
+								{connection.sessionsStatus === 'loading'
+									? 'Loading…'
+									: 'No sessions yet. Create one to get started.'}
+							</p>
+						{:else}
+							<ul class="space-y-2">
+								{#each sessions as session (session.id)}
+									<li class="rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3">
+										{#if editingId === session.id}
+											<form onsubmit={handleRename} class="flex items-center gap-2">
+												<input
+													bind:value={nameDraft}
+													aria-label="Session name"
+													class="min-w-0 flex-1 rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 focus:border-neutral-500 focus:ring-2 focus:ring-neutral-200 focus:outline-none"
+												/>
 												<button
-													onclick={() => confirmDelete(session.id)}
-													class="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700"
+													type="submit"
+													class="shrink-0 rounded-md bg-neutral-900 px-3 py-2 text-xs font-medium text-white hover:bg-neutral-800"
 												>
-													Delete
+													Save
 												</button>
 												<button
-													onclick={() => (confirmingId = null)}
-													class="rounded-md px-3 py-1.5 text-xs text-neutral-600 hover:bg-neutral-100"
+													type="button"
+													onclick={cancelRename}
+													class="shrink-0 rounded-md px-3 py-2 text-xs text-neutral-600 hover:bg-neutral-100"
 												>
 													Cancel
 												</button>
-											</div>
-										</div>
-									{:else}
-										<div class="flex items-center justify-between gap-3">
-											<div class="flex min-w-0 items-center gap-2">
-												<a
-													href={resolve(`/session?id=${encodeURIComponent(session.id)}`)}
-													class="truncate text-sm text-neutral-800 hover:text-neutral-950 hover:underline"
-													title={session.name}
-												>
-													{session.name}
-												</a>
-												{#if formatSessionDate(session.updatedAt)}
-													<span
-														class="shrink-0 text-xs text-neutral-400"
-														title="Last modified {formatSessionDate(session.updatedAt)}"
+											</form>
+										{:else if confirmingId === session.id}
+											<div class="flex items-center justify-between gap-3">
+												<span class="text-sm text-neutral-700">Delete this session?</span>
+												<div class="flex shrink-0 items-center gap-2">
+													<button
+														onclick={() => confirmDelete(session.id)}
+														class="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700"
 													>
-														{formatSessionDate(session.updatedAt)}
-													</span>
-												{/if}
+														Delete
+													</button>
+													<button
+														onclick={() => (confirmingId = null)}
+														class="rounded-md px-3 py-1.5 text-xs text-neutral-600 hover:bg-neutral-100"
+													>
+														Cancel
+													</button>
+												</div>
 											</div>
-											<div class="flex shrink-0 items-center gap-1">
-												<button
-													onclick={() => beginRename(session)}
-													class="rounded-md px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900"
-												>
-													Rename
-												</button>
-												<button
-													onclick={() => requestDelete(session.id)}
-													class="rounded-md px-2 py-1 text-xs text-neutral-500 hover:bg-red-50 hover:text-red-600"
-												>
-													Delete
-												</button>
+										{:else}
+											<div class="flex items-center justify-between gap-3">
+												<div class="flex min-w-0 items-center gap-2">
+													<a
+														href={resolve(`/session?id=${encodeURIComponent(session.id)}`)}
+														class="truncate text-sm text-neutral-800 hover:text-neutral-950 hover:underline"
+														title={session.name}
+													>
+														{session.name}
+													</a>
+													{#if formatSessionDate(session.updatedAt)}
+														<span
+															class="shrink-0 text-xs text-neutral-400"
+															title="Last modified {formatSessionDate(session.updatedAt)}"
+														>
+															{formatSessionDate(session.updatedAt)}
+														</span>
+													{/if}
+												</div>
+												<div class="flex shrink-0 items-center gap-1">
+													<button
+														onclick={() => beginRename(session)}
+														class="rounded-md px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900"
+													>
+														Rename
+													</button>
+													<button
+														onclick={() => requestDelete(session.id)}
+														class="rounded-md px-2 py-1 text-xs text-neutral-500 hover:bg-red-50 hover:text-red-600"
+													>
+														Delete
+													</button>
+												</div>
 											</div>
-										</div>
-									{/if}
-								</li>
-							{/each}
-						</ul>
+										{/if}
+									</li>
+								{/each}
+							</ul>
+						{/if}
 					{/if}
 				</section>
 

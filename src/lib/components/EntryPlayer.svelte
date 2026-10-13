@@ -55,8 +55,8 @@
 		onCarve?: (index: number, from: number, to: number) => void;
 		/** Group the selected lines under a section type (chorus/verse/bridge/other). */
 		onGroupLines?: (indices: number[], type: string) => void;
-		/** Break a group apart again. */
-		onUngroup?: (groupId: string) => void;
+		/** Ungroup one section instance (the given line indices). */
+		onUngroup?: (indices: number[]) => void;
 		/** Rename a section. */
 		onRenameGroup?: (groupId: string, name: string) => void;
 		/** Draw the rounded border/background bubble. Off when the parent supplies it. */
@@ -869,7 +869,7 @@
 									type="button"
 									onclick={(event) => {
 										event.stopPropagation();
-										onUngroup(row.id);
+										onUngroup(row.indices);
 									}}
 									title="Ungroup section"
 									aria-label="Ungroup section"
@@ -909,6 +909,14 @@
 						<div class="mt-1.5 flex flex-col gap-1 pl-2">
 							{#each row.indices as lineIndex (lineIndex)}{@render lineRow(lineIndex)}{/each}
 						</div>
+						<!-- Drop zone: land here to add at the end of the open section; below = after. -->
+						<div
+							data-row
+							data-group-end="true"
+							data-line-start={row.indices[0] + row.indices.length}
+							class="h-2"
+							aria-hidden="true"
+						></div>
 					{:else}
 						<div class="mt-2 flex flex-col gap-3 pl-2">
 							{#each row.indices as lineIndex (lineIndex)}
@@ -916,14 +924,6 @@
 							{/each}
 						</div>
 					{/if}
-					<!-- Drop zone: land here to add at the end of the section; below it = after. -->
-					<div
-						data-row
-						data-group-end="true"
-						data-line-start={row.indices[0] + row.indices.length}
-						class="h-2"
-						aria-hidden="true"
-					></div>
 				</div>
 			{/if}
 		{/each}

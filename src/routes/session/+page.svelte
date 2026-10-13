@@ -23,6 +23,7 @@
 		scribbleAudioUrl,
 		SCRIBBLES_SESSION_ID,
 		setBookmark,
+		subscribeChanges,
 		takeAudioUrl,
 		updateLineText,
 		updateLyrics,
@@ -150,6 +151,28 @@
 		if (!url || scribblesLoadedFor === url) return;
 		scribblesLoadedFor = url;
 		void loadScribbles(url);
+	});
+
+	// Live updates: when another client writes anything, refetch what we show.
+	$effect(() => {
+		const url = api.url;
+		const id = sessionId;
+		if (!url) return;
+		let timer: number | undefined;
+		const stop = subscribeChanges(url, () => {
+			window.clearTimeout(timer);
+			timer = window.setTimeout(() => {
+				if (id) {
+					void loadSession(url, id);
+					void refreshScrapbooks(url);
+				}
+				void loadScribbles(url);
+			}, 500);
+		});
+		return () => {
+			window.clearTimeout(timer);
+			stop();
+		};
 	});
 
 	$effect(() => {
@@ -1196,12 +1219,14 @@
 		saveLines(lines);
 	}
 
-	/** Break a section group back into plain lines. */
-	function ungroupScrapbookLines(groupId: string) {
-		if (!scrapbook) return;
-		const type = scrapbookFlat.find((ref) => ref.group?.id === groupId)?.group?.type;
-		let lines = scrapbookFlat.map((ref) => {
-			if (ref.group?.id !== groupId) return ref;
+	/** Break one section instance back into plain lines (others stay grouped). */
+	function ungroupScrapbookLines(indices: number[]) {
+		if (!scrapbook || !indices.length) return;
+		const type = scrapbookFlat[indices[0]]?.group?.type;
+		const drop: Record<number, boolean> = {};
+		for (const index of indices) drop[index] = true;
+		let lines = scrapbookFlat.map((ref, index) => {
+			if (!drop[index]) return ref;
 			return {
 				session_id: ref.session_id,
 				take_id: ref.take_id,

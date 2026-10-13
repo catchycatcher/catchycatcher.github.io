@@ -132,6 +132,22 @@ export async function ping(url: string): Promise<boolean> {
 	}
 }
 
+/**
+ * Subscribe to the server's live change feed (Server-Sent Events). Call the
+ * returned function to stop listening. Returns a no-op when EventSource is
+ * unavailable (e.g. during SSR).
+ */
+export function subscribeChanges(url: string, onChange: () => void): () => void {
+	if (typeof EventSource === 'undefined') return () => {};
+	const source = new EventSource(`${base(url)}/events`);
+	const handler = () => onChange();
+	source.addEventListener('change', handler);
+	return () => {
+		source.removeEventListener('change', handler);
+		source.close();
+	};
+}
+
 /** Every session stored on the server, with its display name and last change. */
 export async function listSessions(url: string): Promise<Session[]> {
 	const response = await fetch(`${base(url)}/sessions`, {
