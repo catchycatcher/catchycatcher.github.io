@@ -365,6 +365,19 @@ export async function resetLyrics(
 	return body.lyrics;
 }
 
+/** Restore a scribble's lyrics to the pipeline's original detection. */
+export async function resetScribbleLyrics(url: string, scribbleId: string): Promise<LyricLine[]> {
+	const response = await fetch(
+		`${base(url)}/scribbles/${encodeURIComponent(scribbleId)}/lyrics/reset`,
+		{ method: 'POST', headers: { accept: 'application/json' } }
+	);
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when resetting the lyrics.`);
+	}
+	const body = (await response.json()) as { lyrics: LyricLine[] };
+	return body.lyrics;
+}
+
 /** Where a take is used: its bookmark and the scrapbooks holding its lines. */
 export async function getTakeUsage(
 	url: string,

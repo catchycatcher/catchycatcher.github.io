@@ -19,6 +19,7 @@
 		refreshSessions,
 		renameScribble as renameScribbleApi,
 		renameSession,
+		resetScribbleLyrics,
 		retry,
 		scribbleAudioUrl,
 		startNewSession,
@@ -49,6 +50,8 @@
 		pinned: boolean;
 		/** True once the recording has been stored on the server (so it can play). */
 		stored: boolean;
+		/** True once the lyrics were edited away from the pipeline's detection. */
+		edited: boolean;
 		lyrics: LyricLine[];
 		error?: string | null;
 	};
@@ -193,6 +196,7 @@
 				status: normalizeScribbleStatus(item.status),
 				pinned: Boolean(item.bookmarked),
 				stored: true,
+				edited: false,
 				lyrics: [],
 				error: item.error ?? null
 			}));
@@ -204,7 +208,9 @@
 				const result = await getScribble(url, scribble.id);
 				if (result) {
 					scribbles = scribbles.map((candidate) =>
-						candidate.id === scribble.id ? { ...candidate, lyrics: result.lyrics } : candidate
+						candidate.id === scribble.id
+							? { ...candidate, lyrics: result.lyrics, edited: Boolean(result.edited) }
+							: candidate
 					);
 				}
 			}
@@ -242,6 +248,7 @@
 				status: 'processing',
 				pinned: false,
 				stored: false,
+				edited: false,
 				lyrics: [],
 				error: null
 			},
@@ -338,7 +345,7 @@
 
 	function setScribbleLyrics(id: string, lyrics: LyricLine[]) {
 		scribbles = scribbles.map((candidate) =>
-			candidate.id === id ? { ...candidate, lyrics } : candidate
+			candidate.id === id ? { ...candidate, lyrics, edited: true } : candidate
 		);
 	}
 
@@ -394,6 +401,21 @@
 		}
 	}
 
+	/** Restore an edited scribble's lyrics to what the pipeline detected. */
+	async function resetScribbleEntryLyrics(scribble: Scribble) {
+		const url = api.url;
+		if (!url) return;
+		try {
+			const lyrics = await resetScribbleLyrics(url, scribble.id);
+			scribbles = scribbles.map((candidate) =>
+				candidate.id === scribble.id ? { ...candidate, lyrics, edited: false } : candidate
+			);
+		} catch (resetError) {
+			scribbleError =
+				resetError instanceof Error ? resetError.message : 'Could not reset the lines.';
+		}
+	}
+
 	// --- Text scribbles ----------------------------------------------------
 
 	function textLinesOf(scribble: Scribble): string[] {
@@ -420,6 +442,7 @@
 					status: 'done',
 					pinned: false,
 					stored: true,
+					edited: false,
 					lyrics: textLinesToLyrics(['']),
 					error: null
 				},
@@ -1027,6 +1050,15 @@
 														class="rounded-md px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100"
 													>
 														Process
+													</button>
+												{/if}
+												{#if scribble.kind === 'audio' && scribble.status === 'done' && scribble.edited}
+													<button
+														onclick={() => resetScribbleEntryLyrics(scribble)}
+														title="Restore the lines the computer detected"
+														class="rounded-md px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100"
+													>
+														Reset
 													</button>
 												{/if}
 												<button
