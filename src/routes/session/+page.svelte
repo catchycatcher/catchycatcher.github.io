@@ -13,6 +13,7 @@
 		getScribble,
 		getSession,
 		getTakeResult,
+		getTakeUsage,
 		listScrapbooks,
 		listScribbles,
 		patchSessionName,
@@ -20,6 +21,7 @@
 		processTake,
 		renderScrapbook,
 		renameTake,
+		resetLyrics,
 		scrapbookAudioUrl,
 		scribbleAudioUrl,
 		SCRIBBLES_SESSION_ID,
@@ -52,6 +54,8 @@
 		name: string;
 		bookmarked: boolean;
 		status: EntryStatus;
+		/** True once the lyrics were edited away from the pipeline's detection. */
+		edited: boolean;
 		lyrics: LyricLine[];
 		error?: string | null;
 	};
@@ -367,6 +371,7 @@
 				name: take.name?.trim() || take.take_id,
 				bookmarked: Boolean(take.bookmarked),
 				status: normalizeStatus(take.status),
+				edited: false,
 				lyrics: []
 			}));
 			loaded.sort((a, b) => b.index - a.index);
@@ -377,7 +382,11 @@
 			for (const entry of loaded) {
 				if (entry.status === 'done' && entry.serverId) {
 					const result = await getTakeResult(url, id, entry.serverId);
-					if (result) updateEntry(entry.localId, { lyrics: result.lyrics });
+					if (result)
+						updateEntry(entry.localId, {
+							lyrics: result.lyrics,
+							edited: Boolean(result.edited)
+						});
 				}
 			}
 		} catch (loadError) {
@@ -419,6 +428,7 @@
 				name,
 				bookmarked: false,
 				status: 'recorded',
+				edited: false,
 				lyrics: [],
 				error: null
 			},
@@ -516,11 +526,46 @@
 	async function removeEntry(entry: Entry) {
 		const url = api.url;
 		if (!url || !entry.serverId) return;
+		let usage: { bookmarked: boolean; scrapbooks: { name?: string }[] } = {
+			bookmarked: entry.bookmarked,
+			scrapbooks: []
+		};
+		try {
+			usage = await getTakeUsage(url, sessionId, entry.serverId);
+		} catch {
+			/* if the check fails, fall back to the local bookmark flag */
+		}
+		if (usage.bookmarked || usage.scrapbooks.length) {
+			const reasons: string[] = [];
+			if (usage.bookmarked) reasons.push('bookmarked');
+			if (usage.scrapbooks.length) {
+				const names = usage.scrapbooks.map((item) => item.name || 'a scrapbook');
+				reasons.push(`used in ${names.join(', ')}`);
+			}
+			const ok = window.confirm(
+				`Delete this entry? It is ${reasons.join(' and ')}. Its lines will be removed from the scrapbook too.`
+			);
+			if (!ok) return;
+		}
 		try {
 			await deleteTake(url, sessionId, entry.serverId);
 			entries = entries.filter((candidate) => candidate.localId !== entry.localId);
+			// The open scrapbook may just have lost lines; reload it.
+			if (activeScrapbookId) await selectScrapbook(activeScrapbookId);
 		} catch (deleteError) {
 			error = deleteError instanceof Error ? deleteError.message : 'Could not delete the entry.';
+		}
+	}
+
+	/** Restore an edited entry's lyrics to what the pipeline detected. */
+	async function resetEntryLyrics(entry: Entry) {
+		const url = api.url;
+		if (!url || !entry.serverId) return;
+		try {
+			const lyrics = await resetLyrics(url, sessionId, entry.serverId);
+			updateEntry(entry.localId, { lyrics, edited: false });
+		} catch (resetError) {
+			error = resetError instanceof Error ? resetError.message : 'Could not reset the lines.';
 		}
 	}
 
@@ -1140,6 +1185,7 @@
 		if (!url || !entry.serverId) return;
 		const trimmed = text.trim();
 		updateEntry(entry.localId, {
+			edited: true,
 			lyrics: entry.lyrics.map((line, lineIndex) =>
 				lineIndex === index ? { ...line, text: trimmed } : line
 			)
@@ -1197,7 +1243,7 @@
 	 */
 	function applyLyrics(entry: Entry, lines: LyricLine[]) {
 		const previous = entry.lyrics;
-		updateEntry(entry.localId, { lyrics: lines });
+		updateEntry(entry.localId, { lyrics: lines, edited: true });
 
 		const url = api.url;
 		const takeId = entry.serverId;
@@ -1353,6 +1399,15 @@
 		);
 	}
 
+	/** Compare lyric text ignoring case and punctuation (so "Hello!" == "hello"). */
+	function normalizeLyricText(text: string): string {
+		return text
+			.toLowerCase()
+			.replace(/[^\p{L}\p{N}\s]/gu, '')
+			.replace(/\s+/g, ' ')
+			.trim();
+	}
+
 	/**
 	 * Tag lines that share the same words but come from a different recording, so
 	 * the two are told apart. Copies of the *same* clip all share a number; a
@@ -1361,7 +1416,7 @@
 	function withDuplicateTags(lines: LyricLine[]): LyricLine[] {
 		const sourcesByText: Record<string, string[]> = {};
 		lines.forEach((line, index) => {
-			const text = (line.text ?? '').trim();
+			const text = normalizeLyricText(line.text ?? '');
 			if (!text) return;
 			const source = sourceKey(scrapbookFlat[index]);
 			const sources = sourcesByText[text] ?? [];
@@ -1369,7 +1424,7 @@
 			sourcesByText[text] = sources;
 		});
 		return lines.map((line, index) => {
-			const sources = sourcesByText[(line.text ?? '').trim()];
+			const sources = sourcesByText[normalizeLyricText(line.text ?? '')];
 			if (!sources || sources.length < 2) return line;
 			return { ...line, tag: sources.indexOf(sourceKey(scrapbookFlat[index])) + 1 };
 		});
@@ -2057,6 +2112,15 @@
 													class="rounded-md px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100 disabled:opacity-50"
 												>
 													To scrapbook
+												</button>
+											{/if}
+											{#if entry.status === 'done' && entry.edited}
+												<button
+													onclick={() => resetEntryLyrics(entry)}
+													title="Restore the lines the computer detected"
+													class="rounded-md px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100"
+												>
+													Reset
 												</button>
 											{/if}
 											<button

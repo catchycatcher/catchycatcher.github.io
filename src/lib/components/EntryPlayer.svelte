@@ -290,9 +290,7 @@
 		if (!refs.length) return;
 		event.dataTransfer.setData('application/x-catchy-lines', JSON.stringify(refs));
 		event.dataTransfer.effectAllowed = 'copy';
-		showDragPreview(event, [
-			listEl?.querySelector<HTMLElement>(`[data-group-id="${groupId}"]`) ?? null
-		]);
+		showDragPreview(event, [previewGroup(row.indices)]);
 	}
 
 	function sectionStyle(type: string): string {
@@ -578,19 +576,30 @@
 			onRemove?.(indices[position]);
 	}
 
-	/** Selected = blue; the playing line = yellow; inside an open section = its colour. */
-	function bubbleClass(index: number): string {
+	/** The bubble's colour on its own, ignoring selection/playback highlights. */
+	function bubbleBaseClass(index: number): string {
 		if (lines[index]?.raw) {
 			return 'w-full touch-none break-words select-none rounded-md px-1 py-1 text-left text-sm leading-snug text-neutral-700';
 		}
 		const group = lines[index]?.group;
 		const groupKey = group?.instance ?? group?.id;
 		const inOpenGroup = groupKey ? Boolean(expandedGroups[groupKey]) : false;
+		const state = inOpenGroup
+			? sectionInnerStyle(group?.type ?? 'other')
+			: 'border-neutral-200 bg-white/60';
+		return `w-fit max-w-full break-words select-none rounded-xl border px-2.5 py-1 text-left text-sm leading-snug transition-colors ${state}`;
+	}
+
+	/** Selected = blue; the playing line = yellow; inside an open section = its colour. */
+	function bubbleClass(index: number): string {
+		const base = bubbleBaseClass(index);
+		if (lines[index]?.raw) return base;
+		const group = lines[index]?.group;
+		const groupKey = group?.instance ?? group?.id;
+		const inOpenGroup = groupKey ? Boolean(expandedGroups[groupKey]) : false;
 		const isSelected = selected.includes(index);
 		const isActive = index === activeLine;
-		let state = inOpenGroup
-			? sectionInnerStyle(group?.type ?? 'other')
-			: 'border-neutral-200 bg-white/60 hover:bg-white';
+		let state: string | null = null;
 		if (isSelected && isActive) {
 			// Yellow outline replaces the blue one (no double outline).
 			state = 'border-amber-400 bg-blue-200';
@@ -598,8 +607,10 @@
 			state = 'border-blue-400 bg-blue-200';
 		} else if (isActive) {
 			state = 'border-amber-300 bg-amber-200 text-neutral-900';
+		} else if (!inOpenGroup) {
+			state = 'hover:bg-white';
 		}
-		return `w-fit max-w-full break-words select-none rounded-xl border px-2.5 py-1 text-left text-sm leading-snug transition-colors ${state}`;
+		return state ? `${base} ${state}` : base;
 	}
 
 	function writeDragPayload(event: DragEvent, indices: number[]) {
@@ -616,15 +627,60 @@
 		}
 	}
 
+	/** A DOM snapshot of one line, in its original (unselected) colour. */
+	function previewLine(index: number): HTMLElement {
+		const line = lines[index];
+		const node = document.createElement('div');
+		node.className = bubbleBaseClass(index);
+		if (line?.raw) {
+			node.textContent = line.text;
+			return node;
+		}
+		for (const word of line?.words ?? []) {
+			const span = document.createElement('span');
+			span.className = 'mr-1 inline-block rounded px-0.5';
+			span.textContent = word;
+			node.appendChild(span);
+		}
+		if (line?.tag) {
+			const tag = document.createElement('span');
+			tag.className =
+				'ml-1.5 inline-block rounded-full bg-black/10 px-1.5 align-middle text-[10px] leading-tight font-semibold';
+			tag.textContent = String(line.tag);
+			node.appendChild(tag);
+		}
+		return node;
+	}
+
+	/** A DOM snapshot of a whole section, in its own colour. */
+	function previewGroup(indices: number[]): HTMLElement {
+		const group = lines[indices[0]]?.group;
+		const wrap = document.createElement('div');
+		wrap.className = groupWrapClass(group?.type ?? 'other');
+		const header = document.createElement('div');
+		header.className = 'text-[11px] font-semibold tracking-wide uppercase';
+		header.textContent = group?.name || sectionLabel(group?.type ?? 'other');
+		wrap.appendChild(header);
+		const body = document.createElement('div');
+		body.className = 'mt-1.5 flex flex-col gap-1 pl-1';
+		for (const index of indices) body.appendChild(previewLine(index));
+		wrap.appendChild(body);
+		return wrap;
+	}
+
+	/** The line indices of the first section instance with ``groupId``. */
+	function rowsOfGroup(groupId: string): number[] {
+		const row = rows.find((candidate) => candidate.kind === 'group' && candidate.id === groupId);
+		return row && row.kind === 'group' ? row.indices : [];
+	}
+
 	/**
-	 * Show a custom image of what is being dragged under the cursor: a snapshot of
-	 * every row in the selection, or of a whole section — not just the single row
-	 * the pointer happened to grab.
+	 * Show a custom image of what is being dragged under the cursor: every row in
+	 * the selection, or a whole section — with no extra chrome and no selection
+	 * highlight, so it looks just like the rows on the page.
 	 */
-	function showDragPreview(event: DragEvent, nodes: (HTMLElement | null)[]) {
-		if (!event.dataTransfer) return;
-		const items = nodes.filter((node): node is HTMLElement => Boolean(node));
-		if (!items.length) return;
+	function showDragPreview(event: DragEvent, nodes: HTMLElement[]) {
+		if (!event.dataTransfer || !nodes.length) return;
 		const preview = document.createElement('div');
 		preview.setAttribute('aria-hidden', 'true');
 		preview.style.cssText = [
@@ -633,47 +689,39 @@
 			'left: -10000px',
 			'display: flex',
 			'flex-direction: column',
-			'gap: 4px',
-			'padding: 6px',
-			'border-radius: 12px',
-			'background: rgba(255, 255, 255, 0.96)',
-			'border: 1px solid rgba(0, 0, 0, 0.08)',
-			'box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18)',
+			'gap: 6px',
+			'align-items: flex-start',
 			'max-width: 320px',
-			'overflow: hidden',
 			'pointer-events: none'
 		].join(';');
-		for (const node of items) {
-			const clone = node.cloneNode(true) as HTMLElement;
-			clone.style.margin = '0';
-			clone.style.flexShrink = '0';
-			preview.appendChild(clone);
+		for (const node of nodes) {
+			node.style.margin = '0';
+			node.style.flexShrink = '0';
+			preview.appendChild(node);
 		}
 		document.body.appendChild(preview);
 		const rect = preview.getBoundingClientRect();
-		event.dataTransfer.setDragImage(preview, Math.min(20, rect.width / 2), 16);
+		event.dataTransfer.setDragImage(preview, Math.min(20, rect.width / 2), 14);
 		// The browser snapshots the node now; this is just a placeholder to drop.
 		window.setTimeout(() => preview.remove(), 0);
 	}
 
 	function dragStart(event: DragEvent, index: number) {
+		// Keep the row drag from also triggering the section drag it sits in.
+		event.stopPropagation();
 		const indices = selectedIndices(index);
 		writeDragPayload(event, indices);
 		showDragPreview(
 			event,
-			indices.map(
-				(item) => listEl?.querySelector<HTMLElement>(`[data-line-index="${item}"]`) ?? null
-			)
+			[...indices].sort((a, b) => a - b).map((item) => previewLine(item))
 		);
 	}
 
-	/** Dragging a group bubble moves every line inside it. */
-	function dragGroupStart(event: DragEvent, indices: number[]) {
+	/** Dragging a section (from anywhere on it) moves every line inside. */
+	function dragGroupStart(event: DragEvent, indices: number[], groupId: string) {
 		writeDragPayload(event, indices);
-		const wrapper =
-			(event.currentTarget as HTMLElement | null)?.closest<HTMLElement>('[data-group-instance]') ??
-			null;
-		showDragPreview(event, [wrapper]);
+		const groupLines = rowsOfGroup(groupId);
+		showDragPreview(event, [previewGroup(groupLines.length ? groupLines : indices)]);
 		if (allowReorder && !dragLine) {
 			selected = [...indices];
 			anchor = indices[0];
@@ -721,10 +769,14 @@
 	function onListDragOver(event: DragEvent) {
 		if (!droppable) return;
 		event.preventDefault();
-		// Alt copies instead of moving; a drag carrying whole lines is always a copy.
+		// An internal reorder is a move (Alt makes it a copy); anything dragged in
+		// from elsewhere is a copy. Default to 'copy' so a missing type list can
+		// never make the browser reject the drop.
 		if (event.dataTransfer) {
-			const external = event.dataTransfer.types.includes('application/x-catchy-lines');
-			event.dataTransfer.dropEffect = event.altKey || external ? 'copy' : 'move';
+			const internal = Array.from(event.dataTransfer.types).includes(
+				'application/x-catchy-indices'
+			);
+			event.dataTransfer.dropEffect = internal && !event.altKey ? 'move' : 'copy';
 		}
 		const hit = insertionIndex(event.clientY);
 		dropIndex = hit.index;
@@ -859,18 +911,18 @@
 						: undefined}
 					class={bubbleClass(index)}
 				>
-					{#if lines[index]?.tag}
-						<span
-							class="mr-1.5 inline-block rounded-full bg-black/10 px-1.5 align-middle text-[10px] leading-tight font-semibold"
-							title="A different recording of the same words">{lines[index].tag}</span
-						>
-					{/if}
 					{#each lines[index]?.words ?? [] as word, wordIndex (wordIndex)}{@render wordSpan(
 							index,
 							word,
 							wordIndex,
 							isCarving(index, wordIndex)
 						)}{/each}
+					{#if lines[index]?.tag}
+						<span
+							class="ml-1.5 inline-block rounded-full bg-black/10 px-1.5 align-middle text-[10px] leading-tight font-semibold"
+							title="A different recording of the same words">{lines[index].tag}</span
+						>
+					{/if}
 				</button>
 				{#if onRemove}
 					<button
@@ -1004,6 +1056,9 @@
 					role="listitem"
 					data-group-instance={row.instance}
 					data-group-id={row.id}
+					draggable={Boolean(dragLine || allowReorder)}
+					ondragstart={(event) => dragGroupStart(event, row.indices, row.id)}
+					ondragend={clearDrop}
 					class={groupWrapClass(row.type)}
 				>
 					<div
@@ -1037,9 +1092,6 @@
 							<!-- svelte-ignore a11y_no_static_element_interactions -->
 							<!-- svelte-ignore a11y_click_events_have_key_events -->
 							<div
-								draggable={Boolean(dragLine || allowReorder)}
-								ondragstart={(event) => dragGroupStart(event, row.indices)}
-								ondragend={clearDrop}
 								onclick={(event) => toggleGroupOpen(row.instance, event)}
 								title="Click to show or hide the lines inside"
 								class="flex min-w-0 cursor-pointer items-center gap-1"
@@ -1123,9 +1175,6 @@
 						<!-- svelte-ignore a11y_click_events_have_key_events -->
 						<div
 							class="mt-2 flex cursor-pointer flex-col gap-3 pl-1"
-							draggable={Boolean(dragLine || allowReorder)}
-							ondragstart={(event) => dragGroupStart(event, row.indices)}
-							ondragend={clearDrop}
 							onclick={(event) => selectGroup(row.indices, event)}
 						>
 							{#each row.indices as lineIndex (lineIndex)}

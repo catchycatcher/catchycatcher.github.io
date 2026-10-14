@@ -56,6 +56,8 @@ export type TakeResult = {
 	vocals: string;
 	background: string;
 	lyrics: LyricLine[];
+	/** True when the lyrics have been edited away from the pipeline's detection. */
+	edited?: boolean;
 };
 
 /** A take as the session manifest describes it. */
@@ -344,6 +346,45 @@ export async function updateLyrics(
 	}
 	const body = (await response.json()) as { lyrics: LyricLine[] };
 	return body.lyrics;
+}
+
+/** Restore a take's lyrics to the pipeline's original detection. */
+export async function resetLyrics(
+	url: string,
+	sessionId: string,
+	takeId: string
+): Promise<LyricLine[]> {
+	const response = await fetch(
+		`${base(url)}/sessions/${encodeURIComponent(sessionId)}/takes/${encodeURIComponent(takeId)}/lyrics/reset`,
+		{ method: 'POST', headers: { accept: 'application/json' } }
+	);
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when resetting the lyrics.`);
+	}
+	const body = (await response.json()) as { lyrics: LyricLine[] };
+	return body.lyrics;
+}
+
+/** Where a take is used: its bookmark and the scrapbooks holding its lines. */
+export async function getTakeUsage(
+	url: string,
+	sessionId: string,
+	takeId: string
+): Promise<{
+	bookmarked: boolean;
+	scrapbooks: { scrapbook_id: string; name?: string; line_count: number }[];
+}> {
+	const response = await fetch(
+		`${base(url)}/sessions/${encodeURIComponent(sessionId)}/takes/${encodeURIComponent(takeId)}/usage`,
+		{ headers: { accept: 'application/json' } }
+	);
+	if (!response.ok) {
+		throw new Error(`The server answered ${response.status} when checking the entry.`);
+	}
+	return (await response.json()) as {
+		bookmarked: boolean;
+		scrapbooks: { scrapbook_id: string; name?: string; line_count: number }[];
+	};
 }
 
 /** A playable url for a take's raw audio or a generated stem. */
