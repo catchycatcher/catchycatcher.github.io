@@ -129,6 +129,19 @@
 		return () => micSharer.stop();
 	});
 
+	// Escape stops a scribble recording, like the session's Stop button.
+	$effect(() => {
+		const onKey = (event: KeyboardEvent) => {
+			if (event.key === 'Escape' && recorder.recording) {
+				event.preventDefault();
+				recorder.stop();
+				segmentStartedAt = 0;
+			}
+		};
+		window.addEventListener('keydown', onKey);
+		return () => window.removeEventListener('keydown', onKey);
+	});
+
 	// Scribbles are global: load them once per server.
 	$effect(() => {
 		const url = api.url;
@@ -277,7 +290,8 @@
 	function scribbleAudio(scribble: Scribble): string {
 		const url = api.url;
 		if (!url) return '';
-		return scribbleAudioUrl(url, scribble.id, scribble.status === 'done' ? 'vocals' : 'original');
+		// Raw recording, so scribbles are audible before (and after) processing.
+		return scribbleAudioUrl(url, scribble.id, 'original');
 	}
 
 	async function processScribbleEntry(scribble: Scribble) {

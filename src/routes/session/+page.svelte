@@ -264,7 +264,8 @@
 	function scribbleAudio(scribble: Scribble): string {
 		const url = api.url;
 		if (!url) return '';
-		return scribbleAudioUrl(url, scribble.id, scribble.status === 'done' ? 'vocals' : 'original');
+		// Raw recording, so scribbles are audible before (and after) processing.
+		return scribbleAudioUrl(url, scribble.id, 'original');
 	}
 
 	function scribbleLineRef(scribble: Scribble, lineIndex: number): LineRef | null {
@@ -474,6 +475,11 @@
 		if ((event.key === 'Backspace' || event.key === 'Delete') && recording) {
 			event.preventDefault();
 			void scrapCurrent();
+			return;
+		}
+		if (event.key === 'Escape' && recording) {
+			event.preventDefault();
+			stopRecording();
 		}
 	}
 
@@ -557,12 +563,9 @@
 	function entryAudio(entry: Entry): string {
 		const url = api.url;
 		if (!url || !sessionId || !entry.serverId) return '';
-		return takeAudioUrl(
-			url,
-			sessionId,
-			entry.serverId,
-			entry.status === 'done' ? 'vocals' : 'original'
-		);
+		// Always play the raw recording: you can hear it without processing, and
+		// it keeps the performance rather than the isolated vocal stem.
+		return takeAudioUrl(url, sessionId, entry.serverId, 'original');
 	}
 
 	function journalLineRef(entry: Entry, lineIndex: number): LineRef | null {
