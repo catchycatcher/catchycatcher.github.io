@@ -576,41 +576,39 @@
 			onRemove?.(indices[position]);
 	}
 
-	/** The bubble's colour on its own, ignoring selection/playback highlights. */
-	function bubbleBaseClass(index: number): string {
-		if (lines[index]?.raw) {
-			return 'w-full touch-none break-words select-none rounded-md px-1 py-1 text-left text-sm leading-snug text-neutral-700';
-		}
+	/** Structure shared by every bubble (colour is chosen separately). */
+	const BUBBLE_BASE =
+		'w-fit max-w-full break-words select-none rounded-xl border px-2.5 py-1 text-left text-sm leading-snug transition-colors';
+	const RAW_BUBBLE =
+		'w-full touch-none break-words select-none rounded-md px-1 py-1 text-left text-sm leading-snug text-neutral-700';
+
+	/** The bubble's colour classes: selection/playback highlight, or the plain look. */
+	function bubbleState(index: number, highlight: boolean): string {
 		const group = lines[index]?.group;
 		const groupKey = group?.instance ?? group?.id;
 		const inOpenGroup = groupKey ? Boolean(expandedGroups[groupKey]) : false;
-		const state = inOpenGroup
+		const plain = inOpenGroup
 			? sectionInnerStyle(group?.type ?? 'other')
-			: 'border-neutral-200 bg-white/60';
-		return `w-fit max-w-full break-words select-none rounded-xl border px-2.5 py-1 text-left text-sm leading-snug transition-colors ${state}`;
+			: 'border-neutral-200 bg-white/60 hover:bg-white';
+		if (!highlight) return plain;
+		if (selected.includes(index) && index === activeLine) {
+			// Yellow outline replaces the blue one (no double outline).
+			return 'border-amber-400 bg-blue-200';
+		}
+		if (selected.includes(index)) return 'border-blue-400 bg-blue-200';
+		if (index === activeLine) return 'border-amber-300 bg-amber-200 text-neutral-900';
+		return plain;
 	}
 
-	/** Selected = blue; the playing line = yellow; inside an open section = its colour. */
+	/** The bubble's colour on its own, ignoring selection/playback highlights. */
+	function bubbleBaseClass(index: number): string {
+		if (lines[index]?.raw) return RAW_BUBBLE;
+		return `${BUBBLE_BASE} ${bubbleState(index, false)}`;
+	}
+
 	function bubbleClass(index: number): string {
-		const base = bubbleBaseClass(index);
-		if (lines[index]?.raw) return base;
-		const group = lines[index]?.group;
-		const groupKey = group?.instance ?? group?.id;
-		const inOpenGroup = groupKey ? Boolean(expandedGroups[groupKey]) : false;
-		const isSelected = selected.includes(index);
-		const isActive = index === activeLine;
-		let state: string | null = null;
-		if (isSelected && isActive) {
-			// Yellow outline replaces the blue one (no double outline).
-			state = 'border-amber-400 bg-blue-200';
-		} else if (isSelected) {
-			state = 'border-blue-400 bg-blue-200';
-		} else if (isActive) {
-			state = 'border-amber-300 bg-amber-200 text-neutral-900';
-		} else if (!inOpenGroup) {
-			state = 'hover:bg-white';
-		}
-		return state ? `${base} ${state}` : base;
+		if (lines[index]?.raw) return RAW_BUBBLE;
+		return `${BUBBLE_BASE} ${bubbleState(index, true)}`;
 	}
 
 	function writeDragPayload(event: DragEvent, indices: number[]) {
