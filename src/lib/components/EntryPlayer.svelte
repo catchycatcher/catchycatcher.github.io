@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import type { LyricLine } from '#lib/connection.svelte.ts';
 	import { extensionForMime } from '#lib/recorder.svelte.ts';
 
@@ -149,6 +150,34 @@
 	let editDraft = $state('');
 	/** Word range being dragged out for carving (only on a raw line). */
 	let carving = $state<{ index: number; from: number; to: number } | null>(null);
+
+	/**
+	 * Swapping ``src`` (e.g. the scrapbook's vocals-only ⇄ backgrounds mix)
+	 * reloads the element and drops the playhead, so remember where we were and
+	 * restore it once the new source's metadata arrives. Only for a direct swap
+	 * between two sources — not a first load, and not a clear-to-empty.
+	 */
+	let lastSrc = '';
+	let pendingSwap: { time: number; play: boolean } | null = null;
+
+	$effect.pre(() => {
+		const next = src;
+		if (next === lastSrc) return;
+		const previous = lastSrc;
+		lastSrc = next;
+		if (!next || !previous) return;
+		pendingSwap = { time: untrack(() => currentTime), play: untrack(() => playing) };
+	});
+
+	function onLoadedMetadata() {
+		duration = audio?.duration ?? 0;
+		const swap = pendingSwap;
+		if (!swap || !audio) return;
+		pendingSwap = null;
+		audio.currentTime = swap.time;
+		currentTime = swap.time;
+		if (swap.play) void audio.play();
+	}
 
 	/** Each line's display text (edited override, else its words joined). */
 	function resolve(rawLines: LyricLine[]): Line[] {
@@ -1017,7 +1046,7 @@
 		onpause={() => (playing = false)}
 		onended={() => (playing = false)}
 		ontimeupdate={() => (currentTime = audio?.currentTime ?? 0)}
-		onloadedmetadata={() => (duration = audio?.duration ?? 0)}
+		onloadedmetadata={onLoadedMetadata}
 		ondurationchange={() => (duration = audio?.duration ?? 0)}
 	></audio>
 </div>

@@ -141,6 +141,10 @@
 	let scrapbookMenuOpen = $state(false);
 	/** Guards against creating two "default" scrapbooks at once. */
 	let autoCreateInFlight = false;
+	/** Which mix is playing: the isolated vocals, or with the source backgrounds. */
+	let scrapbookMode = $state<'vocals' | 'backgrounds'>('vocals');
+	/** True while the other mix variant is being rendered (playback keeps going). */
+	let backgroundsPending = $state(false);
 
 	/** Split-pane: how much of the row the scrapbook gets, in percent. */
 	let splitPercent = $state(50);
@@ -653,6 +657,8 @@
 		activeScrapbookId = id;
 		scrapbook = null;
 		scrapbookError = null;
+		scrapbookMode = 'vocals';
+		backgroundsPending = false;
 		if (!url || !id) return;
 		try {
 			scrapbook = await getScrapbook(url, sessionId, id);
@@ -765,6 +771,44 @@
 		}
 	}
 
+	/** True once the server has a mix for the current lines in this mode. */
+	function variantRendered(mode: 'vocals' | 'backgrounds'): boolean {
+		return Boolean(scrapbook?.render?.variants?.[mode]);
+	}
+
+	/**
+	 * Flip the scrapbook between the isolated-vocal mix and one that keeps each
+	 * line's background. The other variant renders on demand (cached afterwards);
+	 * playback keeps going on the current mix until the new one is ready.
+	 */
+	async function toggleBackgrounds() {
+		const url = api.url;
+		if (!url || !activeScrapbookId || !scrapbook || backgroundsPending) return;
+		const target: 'vocals' | 'backgrounds' =
+			scrapbookMode === 'backgrounds' ? 'vocals' : 'backgrounds';
+		if (variantRendered(target)) {
+			scrapbookMode = target;
+			return;
+		}
+		backgroundsPending = true;
+		scrapbookError = null;
+		try {
+			const render = await renderScrapbook(
+				url,
+				sessionId,
+				activeScrapbookId,
+				target === 'backgrounds'
+			);
+			scrapbook = { ...scrapbook, render };
+		} catch (renderError) {
+			scrapbookError =
+				renderError instanceof Error ? renderError.message : 'Could not render the mix.';
+		} finally {
+			backgroundsPending = false;
+		}
+		if (variantRendered(target)) scrapbookMode = target;
+	}
+
 	async function renderActive() {
 		const url = api.url;
 		if (!url || !activeScrapbookId || !scrapbook?.lines.length) {
@@ -774,7 +818,12 @@
 		scrapbookBusy = true;
 		renderPending = true;
 		try {
-			const render = await renderScrapbook(url, sessionId, activeScrapbookId);
+			const render = await renderScrapbook(
+				url,
+				sessionId,
+				activeScrapbookId,
+				scrapbookMode === 'backgrounds'
+			);
 			if (scrapbook) scrapbook = { ...scrapbook, render, rendered: true };
 		} catch (renderError) {
 			scrapbookError = renderError instanceof Error ? renderError.message : 'Could not render.';
@@ -1313,11 +1362,15 @@
 		saveLines(lines);
 	}
 
-	let scrapbookSrc = $derived(
-		api.url && activeScrapbookId && scrapbook?.render && renderInSync
-			? `${scrapbookAudioUrl(api.url, sessionId, activeScrapbookId)}?v=${encodeURIComponent(scrapbook.render.rendered_at ?? '')}`
-			: ''
-	);
+	let scrapbookSrc = $derived.by(() => {
+		const render = scrapbook?.render;
+		if (!api.url || !sessionId || !activeScrapbookId || !render || !renderInSync) return '';
+		const info = render.variants?.[scrapbookMode];
+		if (!info) return '';
+		const version = encodeURIComponent(info.rendered_at ?? '');
+		const backgrounds = scrapbookMode === 'backgrounds' ? '&backgrounds=true' : '';
+		return `${scrapbookAudioUrl(api.url, sessionId, activeScrapbookId)}?v=${version}${backgrounds}`;
+	});
 </script>
 
 <svelte:head>
@@ -1555,6 +1608,32 @@
 								</p>
 							</div>
 						{:else}
+							<button
+								type="button"
+								role="switch"
+								aria-checked={scrapbookMode === 'backgrounds'}
+								onclick={toggleBackgrounds}
+								disabled={backgroundsPending || scrapbookBusy}
+								title="Play the mix with the background music behind each line"
+								class="flex items-center gap-2 self-start rounded-full border px-3 py-1 text-xs font-medium transition-colors {scrapbookMode ===
+								'backgrounds'
+									? 'border-neutral-900 bg-neutral-900 text-white'
+									: 'border-neutral-300 bg-white text-neutral-600 hover:bg-neutral-100'} disabled:cursor-not-allowed disabled:opacity-60"
+							>
+								<span
+									class="size-2 rounded-full {scrapbookMode === 'backgrounds'
+										? 'bg-white'
+										: 'bg-neutral-300'}"
+									aria-hidden="true"
+								></span>
+								{#if backgroundsPending}
+									Rendering backgrounds…
+								{:else if scrapbookMode === 'backgrounds'}
+									Backgrounds on
+								{:else}
+									Backgrounds off
+								{/if}
+							</button>
 							<EntryPlayer
 								src={scrapbookSrc}
 								lyrics={scrapbookLines}

@@ -599,6 +599,8 @@ export type ScrapbookRender = {
 	timeline: LyricLine[];
 	gaps: number[];
 	rendered_at?: string;
+	/** Which mixes exist for the current lines: ``vocals`` and/or ``backgrounds``. */
+	variants?: Record<string, { signature: string; rendered_at?: string }>;
 };
 
 /** A named section: an ordered block of lines that plays together. */
@@ -705,10 +707,13 @@ export async function deleteScrapbook(
 export async function renderScrapbook(
 	url: string,
 	sessionId: string,
-	scrapbookId: string
+	scrapbookId: string,
+	backgrounds = false
 ): Promise<ScrapbookRender> {
 	const response = await fetch(
-		`${scrapbookBase(url, sessionId)}/${encodeURIComponent(scrapbookId)}/render`,
+		`${scrapbookBase(url, sessionId)}/${encodeURIComponent(scrapbookId)}/render${
+			backgrounds ? '?backgrounds=true' : ''
+		}`,
 		{ method: 'POST', headers: { accept: 'application/json' } }
 	);
 	if (!response.ok) {
