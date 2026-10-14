@@ -305,8 +305,9 @@
 		// No source until the recording is stored, so the player only shows once
 		// it can actually play — before processing finishes.
 		if (!url || !scribble.stored) return '';
-		// Raw recording, so scribbles are audible before (and after) processing.
-		return scribbleAudioUrl(url, scribble.id, 'original');
+		// Raw recording (gain-normalised once processed), so scribbles are audible
+		// before and after processing; the version picks up the normalised copy.
+		return `${scribbleAudioUrl(url, scribble.id, 'original')}?v=${scribble.status}`;
 	}
 
 	async function processScribbleEntry(scribble: Scribble) {
