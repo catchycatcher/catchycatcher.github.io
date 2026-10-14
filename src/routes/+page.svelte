@@ -47,6 +47,8 @@
 		kind: 'audio' | 'text';
 		status: ScribbleStatus;
 		pinned: boolean;
+		/** True once the recording has been stored on the server (so it can play). */
+		stored: boolean;
 		lyrics: LyricLine[];
 		error?: string | null;
 	};
@@ -190,6 +192,7 @@
 				kind: item.kind === 'text' ? 'text' : 'audio',
 				status: normalizeScribbleStatus(item.status),
 				pinned: Boolean(item.bookmarked),
+				stored: true,
 				lyrics: [],
 				error: item.error ?? null
 			}));
@@ -238,6 +241,7 @@
 				kind: 'audio',
 				status: 'processing',
 				pinned: false,
+				stored: false,
 				lyrics: [],
 				error: null
 			},
@@ -250,17 +254,19 @@
 
 		scribbleBusy = true;
 		try {
-			const upload = await uploadScribble(url, file, {
-				process: true,
+			// Store first (fast) so the scribble is playable immediately — you
+			// don't wait for processing to listen. Processing then runs after.
+			await uploadScribble(url, file, {
+				process: false,
 				index,
 				name,
 				scribbleId: id
 			});
 			scribbles = scribbles.map((candidate) =>
-				candidate.id === id
-					? { ...candidate, status: 'done', lyrics: upload.result?.lyrics ?? [] }
-					: candidate
+				candidate.id === id ? { ...candidate, stored: true, status: 'recorded' } : candidate
 			);
+			const stored = scribbles.find((candidate) => candidate.id === id);
+			if (stored) void processScribbleEntry(stored);
 		} catch (saveError) {
 			scribbles = scribbles.map((candidate) =>
 				candidate.id === id
@@ -289,7 +295,9 @@
 
 	function scribbleAudio(scribble: Scribble): string {
 		const url = api.url;
-		if (!url) return '';
+		// No source until the recording is stored, so the player only shows once
+		// it can actually play — before processing finishes.
+		if (!url || !scribble.stored) return '';
 		// Raw recording, so scribbles are audible before (and after) processing.
 		return scribbleAudioUrl(url, scribble.id, 'original');
 	}
@@ -411,6 +419,7 @@
 					kind: 'text',
 					status: 'done',
 					pinned: false,
+					stored: true,
 					lyrics: textLinesToLyrics(['']),
 					error: null
 				},

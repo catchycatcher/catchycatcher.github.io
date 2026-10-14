@@ -414,7 +414,7 @@
 				index,
 				name,
 				bookmarked: false,
-				status: process ? 'processing' : 'recorded',
+				status: 'recorded',
 				lyrics: [],
 				error: null
 			},
@@ -426,12 +426,11 @@
 		});
 
 		try {
-			const upload = await uploadTake(url, sessionId, file, { process, index, name });
-			updateEntry(localId, {
-				serverId: upload.takeId,
-				status: upload.result ? 'done' : 'recorded',
-				lyrics: upload.result ? upload.result.lyrics : []
-			});
+			// Store first (fast) so the entry is playable right away — you don't
+			// wait for processing to listen. Processing then runs in the background.
+			const upload = await uploadTake(url, sessionId, file, { process: false, index, name });
+			updateEntry(localId, { serverId: upload.takeId, status: 'recorded' });
+			if (process) void processEntryById(localId);
 		} catch (uploadError) {
 			updateEntry(localId, {
 				status: 'error',
@@ -491,14 +490,19 @@
 	// --- Journal entries ---------------------------------------------------
 
 	async function processEntry(entry: Entry) {
+		await processEntryById(entry.localId);
+	}
+
+	async function processEntryById(localId: string) {
 		const url = api.url;
-		if (!url || !entry.serverId) return;
-		updateEntry(entry.localId, { status: 'processing', error: null });
+		const entry = entries.find((candidate) => candidate.localId === localId);
+		if (!url || !entry?.serverId) return;
+		updateEntry(localId, { status: 'processing', error: null });
 		try {
 			const result = await processTake(url, sessionId, entry.serverId);
-			updateEntry(entry.localId, { status: 'done', lyrics: result.lyrics });
+			updateEntry(localId, { status: 'done', lyrics: result.lyrics });
 		} catch (processError) {
-			updateEntry(entry.localId, {
+			updateEntry(localId, {
 				status: 'error',
 				error: processError instanceof Error ? processError.message : 'Could not process the take.'
 			});
