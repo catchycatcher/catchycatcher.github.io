@@ -78,6 +78,8 @@
 		words: string[];
 		raw: boolean;
 		group?: Group;
+		/** Small badge telling apart same-lyric lines from different recordings. */
+		tag?: number;
 	};
 	type Row =
 		| { kind: 'line'; index: number }
@@ -202,7 +204,8 @@
 					end,
 					words: rawWords.map((word) => word.word),
 					raw: Boolean(line.raw),
-					group: line.group
+					group: line.group,
+					tag: line.tag
 				};
 			})
 			.filter((line) => line.text.length > 0);
@@ -287,6 +290,9 @@
 		if (!refs.length) return;
 		event.dataTransfer.setData('application/x-catchy-lines', JSON.stringify(refs));
 		event.dataTransfer.effectAllowed = 'copy';
+		showDragPreview(event, [
+			listEl?.querySelector<HTMLElement>(`[data-group-id="${groupId}"]`) ?? null
+		]);
 	}
 
 	function sectionStyle(type: string): string {
@@ -610,13 +616,64 @@
 		}
 	}
 
+	/**
+	 * Show a custom image of what is being dragged under the cursor: a snapshot of
+	 * every row in the selection, or of a whole section — not just the single row
+	 * the pointer happened to grab.
+	 */
+	function showDragPreview(event: DragEvent, nodes: (HTMLElement | null)[]) {
+		if (!event.dataTransfer) return;
+		const items = nodes.filter((node): node is HTMLElement => Boolean(node));
+		if (!items.length) return;
+		const preview = document.createElement('div');
+		preview.setAttribute('aria-hidden', 'true');
+		preview.style.cssText = [
+			'position: fixed',
+			'top: -10000px',
+			'left: -10000px',
+			'display: flex',
+			'flex-direction: column',
+			'gap: 4px',
+			'padding: 6px',
+			'border-radius: 12px',
+			'background: rgba(255, 255, 255, 0.96)',
+			'border: 1px solid rgba(0, 0, 0, 0.08)',
+			'box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18)',
+			'max-width: 320px',
+			'overflow: hidden',
+			'pointer-events: none'
+		].join(';');
+		for (const node of items) {
+			const clone = node.cloneNode(true) as HTMLElement;
+			clone.style.margin = '0';
+			clone.style.flexShrink = '0';
+			preview.appendChild(clone);
+		}
+		document.body.appendChild(preview);
+		const rect = preview.getBoundingClientRect();
+		event.dataTransfer.setDragImage(preview, Math.min(20, rect.width / 2), 16);
+		// The browser snapshots the node now; this is just a placeholder to drop.
+		window.setTimeout(() => preview.remove(), 0);
+	}
+
 	function dragStart(event: DragEvent, index: number) {
-		writeDragPayload(event, selectedIndices(index));
+		const indices = selectedIndices(index);
+		writeDragPayload(event, indices);
+		showDragPreview(
+			event,
+			indices.map(
+				(item) => listEl?.querySelector<HTMLElement>(`[data-line-index="${item}"]`) ?? null
+			)
+		);
 	}
 
 	/** Dragging a group bubble moves every line inside it. */
 	function dragGroupStart(event: DragEvent, indices: number[]) {
 		writeDragPayload(event, indices);
+		const wrapper =
+			(event.currentTarget as HTMLElement | null)?.closest<HTMLElement>('[data-group-instance]') ??
+			null;
+		showDragPreview(event, [wrapper]);
 		if (allowReorder && !dragLine) {
 			selected = [...indices];
 			anchor = indices[0];
@@ -802,6 +859,12 @@
 						: undefined}
 					class={bubbleClass(index)}
 				>
+					{#if lines[index]?.tag}
+						<span
+							class="mr-1.5 inline-block rounded-full bg-black/10 px-1.5 align-middle text-[10px] leading-tight font-semibold"
+							title="A different recording of the same words">{lines[index].tag}</span
+						>
+					{/if}
 					{#each lines[index]?.words ?? [] as word, wordIndex (wordIndex)}{@render wordSpan(
 							index,
 							word,
@@ -937,7 +1000,12 @@
 			{#if row.kind === 'line'}
 				{@render lineRow(row.index)}
 			{:else}
-				<div role="listitem" class={groupWrapClass(row.type)}>
+				<div
+					role="listitem"
+					data-group-instance={row.instance}
+					data-group-id={row.id}
+					class={groupWrapClass(row.type)}
+				>
 					<div
 						data-row
 						data-group-row="true"
@@ -1062,6 +1130,7 @@
 						>
 							{#each row.indices as lineIndex (lineIndex)}
 								<span
+									data-line-index={lineIndex}
 									class="block rounded px-1 text-sm leading-snug {lineIndex === activeLine
 										? 'bg-amber-200 text-neutral-900'
 										: ''}">{lineText(lineIndex)}</span

@@ -1329,25 +1329,49 @@
 				if (line.source) rendered[sourceKey(line.source)] = line;
 			}
 		}
-		return scrapbookFlat.map((ref, index) => {
-			const base = byIndex ? timeline[index] : rendered[sourceKey(ref)];
-			const dataWords = ref.data?.words ?? [];
-			const label =
-				(ref.data?.text && ref.data.text.trim()) ||
-				dataWords
-					.map((word) => word.word)
-					.join(' ')
-					.trim();
-			return {
-				bpm: base?.bpm ?? ref.data?.bpm ?? 0,
-				'start time': base?.['start time'] ?? 0,
-				'end time': base?.['end time'] ?? 0,
-				words: base?.words ?? dataWords,
-				// The text comes from the line's snapshot, so re-splitting the
-				// journal never changes a scrapbook that already holds it.
-				text: label || `Line ${ref.line_index + 1}`,
-				group: ref.group
-			};
+		return withDuplicateTags(
+			scrapbookFlat.map((ref, index) => {
+				const base = byIndex ? timeline[index] : rendered[sourceKey(ref)];
+				const dataWords = ref.data?.words ?? [];
+				const label =
+					(ref.data?.text && ref.data.text.trim()) ||
+					dataWords
+						.map((word) => word.word)
+						.join(' ')
+						.trim();
+				return {
+					bpm: base?.bpm ?? ref.data?.bpm ?? 0,
+					'start time': base?.['start time'] ?? 0,
+					'end time': base?.['end time'] ?? 0,
+					words: base?.words ?? dataWords,
+					// The text comes from the line's snapshot, so re-splitting the
+					// journal never changes a scrapbook that already holds it.
+					text: label || `Line ${ref.line_index + 1}`,
+					group: ref.group
+				};
+			})
+		);
+	}
+
+	/**
+	 * Tag lines that share the same words but come from a different recording, so
+	 * the two are told apart. Copies of the *same* clip all share a number; a
+	 * word sung once (however many times it is copied) stays unnumbered.
+	 */
+	function withDuplicateTags(lines: LyricLine[]): LyricLine[] {
+		const sourcesByText: Record<string, string[]> = {};
+		lines.forEach((line, index) => {
+			const text = (line.text ?? '').trim();
+			if (!text) return;
+			const source = sourceKey(scrapbookFlat[index]);
+			const sources = sourcesByText[text] ?? [];
+			if (!sources.includes(source)) sources.push(source);
+			sourcesByText[text] = sources;
+		});
+		return lines.map((line, index) => {
+			const sources = sourcesByText[(line.text ?? '').trim()];
+			if (!sources || sources.length < 2) return line;
+			return { ...line, tag: sources.indexOf(sourceKey(scrapbookFlat[index])) + 1 };
 		});
 	}
 

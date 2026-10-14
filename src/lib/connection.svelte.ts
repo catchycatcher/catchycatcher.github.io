@@ -47,6 +47,8 @@ export type LyricLine = {
 	source?: { session_id: string; take_id: string; line_index: number };
 	/** Scrapbook section grouping (UI only; audio is unaffected). */
 	group?: { id: string; type: string; name?: string };
+	/** Small badge to tell apart same-lyric lines from different recordings. */
+	tag?: number;
 };
 
 /** The payload returned once a take has been processed. */
