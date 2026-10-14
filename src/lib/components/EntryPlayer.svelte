@@ -15,6 +15,7 @@
 		onDropLines,
 		onMoveLines,
 		onRemove,
+		onRemoveSelected,
 		onRemoveGroup,
 		onEditLine,
 		onLocateLine,
@@ -44,9 +45,11 @@
 		selectable?: boolean;
 		/** A selection of lines dropped in at ``index`` (``group`` = section to join). */
 		onDropLines?: (refs: unknown[], index: number, group?: Group | null) => void;
-		/** Move the selected line indices to sit before ``index``. */
-		onMoveLines?: (from: number[], to: number, group?: Group | null) => void;
+		/** Move the selected line indices to sit before ``index`` (or copy them). */
+		onMoveLines?: (from: number[], to: number, group?: Group | null, copy?: boolean) => void;
 		onRemove?: (index: number) => void;
+		/** Delete every selected line at once (Backspace/Delete). */
+		onRemoveSelected?: (indices: number[]) => void;
 		/** Delete a whole section (all of the given line indices). */
 		onRemoveGroup?: (indices: number[]) => void;
 		/** Double-clicking a line edits its text (timings are re-guessed). */
@@ -358,6 +361,26 @@
 		void current;
 	});
 
+	// Backspace/Delete removes every selected line.
+	$effect(() => {
+		const onKey = (event: KeyboardEvent) => {
+			if (event.key !== 'Backspace' && event.key !== 'Delete') return;
+			if (!selected.length || event.metaKey || event.ctrlKey || event.altKey) return;
+			const target = event.target as HTMLElement | null;
+			if (
+				target &&
+				(target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+			) {
+				return;
+			}
+			if (!onRemoveSelected && !onRemove) return;
+			event.preventDefault();
+			removeSelection();
+		};
+		window.addEventListener('keydown', onKey);
+		return () => window.removeEventListener('keydown', onKey);
+	});
+
 	// Clicking anywhere outside this player deselects its bubbles.
 	$effect(() => {
 		const onPointerDown = (event: PointerEvent) => {
@@ -535,6 +558,20 @@
 		return [...indices].sort((a, b) => a - b);
 	}
 
+	/** Delete the current selection (Backspace/Delete). */
+	function removeSelection() {
+		const indices = [...selected].sort((a, b) => a - b);
+		if (!indices.length) return;
+		selected = [];
+		anchor = null;
+		if (onRemoveSelected) {
+			onRemoveSelected(indices);
+			return;
+		}
+		for (let position = indices.length - 1; position >= 0; position--)
+			onRemove?.(indices[position]);
+	}
+
 	/** Selected = blue; the playing line = yellow; inside an open section = its colour. */
 	function bubbleClass(index: number): string {
 		if (lines[index]?.raw) {
@@ -568,7 +605,8 @@
 			event.dataTransfer.effectAllowed = 'copy';
 		} else if (allowReorder) {
 			event.dataTransfer.setData('application/x-catchy-indices', JSON.stringify(indices));
-			event.dataTransfer.effectAllowed = 'move';
+			// Alt at the drop turns this into a copy, so allow both effects.
+			event.dataTransfer.effectAllowed = 'copyMove';
 		}
 	}
 
@@ -626,6 +664,11 @@
 	function onListDragOver(event: DragEvent) {
 		if (!droppable) return;
 		event.preventDefault();
+		// Alt copies instead of moving; a drag carrying whole lines is always a copy.
+		if (event.dataTransfer) {
+			const external = event.dataTransfer.types.includes('application/x-catchy-lines');
+			event.dataTransfer.dropEffect = event.altKey || external ? 'copy' : 'move';
+		}
 		const hit = insertionIndex(event.clientY);
 		dropIndex = hit.index;
 		dropGroup = hit.group;
@@ -666,7 +709,7 @@
 		if (internal && onMoveLines) {
 			try {
 				const from: unknown = JSON.parse(internal);
-				if (Array.isArray(from)) onMoveLines(from as number[], index, group);
+				if (Array.isArray(from)) onMoveLines(from as number[], index, group, event.altKey);
 			} catch {
 				/* ignore malformed drag data */
 			}

@@ -841,7 +841,8 @@
 	function syncLinkedGroups(
 		lines: LineRef[],
 		sourceGroupId?: string,
-		sourceIndex?: number
+		sourceIndex?: number,
+		sources?: Record<string, string[]>
 	): LineRef[] {
 		const keyOf = (ref: LineRef): string | undefined => ref.group?.instance ?? ref.group?.id;
 		const runs: {
@@ -878,11 +879,17 @@
 		const canonical: Record<string, LineRef[]> = {};
 		for (const id of ids) {
 			const list = runs.filter((run) => run.id === id);
-			let chosen = list[0];
-			if (sourceGroupId === id && sourceIndex !== undefined) {
-				chosen = list.find((run) => sourceIndex >= run.start && sourceIndex < run.end) ?? chosen;
+			let chosen: LineRef[] = list[0]?.lines ?? [];
+			const edited = sources?.[id];
+			if (edited?.length) {
+				// The copy that was just edited defines the section. If that copy
+				// is gone entirely, the section is gone from every copy too.
+				chosen = list.find((run) => edited.includes(run.instance))?.lines ?? [];
+			} else if (sourceGroupId === id && sourceIndex !== undefined) {
+				chosen =
+					list.find((run) => sourceIndex >= run.start && sourceIndex < run.end)?.lines ?? chosen;
 			}
-			canonical[id] = chosen.lines;
+			canonical[id] = chosen;
 		}
 
 		const out: LineRef[] = [];
@@ -908,8 +915,13 @@
 		return out;
 	}
 
-	function saveLines(lines: LineRef[], sourceGroupId?: string, sourceIndex?: number) {
-		const synced = syncLinkedGroups(lines, sourceGroupId, sourceIndex);
+	function saveLines(
+		lines: LineRef[],
+		sourceGroupId?: string,
+		sourceIndex?: number,
+		sources?: Record<string, string[]>
+	) {
+		const synced = syncLinkedGroups(lines, sourceGroupId, sourceIndex, sources);
 		void saveScrapbook({ lines: nestEntries(synced) });
 	}
 
@@ -963,10 +975,30 @@
 
 	function removeLineAt(index: number) {
 		const current = scrapbook ? [...scrapbookFlat] : [];
-		const groupId = current[index]?.group?.id;
+		const sources = changedGroups(current, [index]);
 		current.splice(index, 1);
-		const sourceIndex = Math.min(index, Math.max(0, current.length - 1));
-		saveLines(current, groupId, sourceIndex);
+		saveLines(current, undefined, undefined, sources);
+	}
+
+	/** Delete every selected line (Backspace/Delete on a selection). */
+	function removeLinesAt(indices: number[]) {
+		if (!scrapbook || !indices.length) return;
+		const current = [...scrapbookFlat];
+		const drop = indices
+			.filter((index) => index >= 0 && index < current.length)
+			.sort((a, b) => a - b);
+		if (!drop.length) return;
+		const dropSet = new Set(drop);
+		const sources = changedGroups(current, drop);
+		let lines = current.filter((_ref, index) => !dropSet.has(index));
+		// Deleting a whole section renumbers the ones of that type that remain.
+		const types = new Set(
+			drop
+				.map((index) => current[index]?.group?.type)
+				.filter((type): type is string => Boolean(type))
+		);
+		for (const type of types) lines = renumberSections(lines, type);
+		saveLines(lines, undefined, undefined, sources);
 	}
 
 	/** Delete a whole section (every line of the instance that was clicked). */
@@ -1006,8 +1038,28 @@
 		return false;
 	}
 
-	/** Move the selected indices together so they land before ``to``. */
-	function moveLines(from: number[], to: number, group?: LineRef['group'] | null) {
+	/**
+	 * Sections whose definition changed because one of ``indices`` left them (or
+	 * moved within them) rather than the whole run relocating. Those copies
+	 * become the canonical content for every linked twin.
+	 */
+	function changedGroups(current: LineRef[], indices: number[]): Record<string, string[]> {
+		const sources: Record<string, string[]> = {};
+		for (const index of indices) {
+			const group = current[index]?.group;
+			if (!group?.id) continue;
+			if (wholeRunMoved(current, indices, group.id)) continue;
+			const instance = group.instance ?? group.id;
+			(sources[group.id] ??= []).push(instance);
+		}
+		return sources;
+	}
+
+	/**
+	 * Move (or, with ``copy``, duplicate) the selected indices so they land before
+	 * ``to``. A copied section becomes its own linked instance.
+	 */
+	function moveLines(from: number[], to: number, group?: LineRef['group'] | null, copy = false) {
 		const current = scrapbook ? [...scrapbookFlat] : [];
 		const valid = from
 			.filter((index) => index >= 0 && index < current.length)
@@ -1015,8 +1067,10 @@
 		if (!valid.length) return;
 
 		const moving = valid.map((index) => current[index]);
-		const removedBefore = valid.filter((index) => index < to).length;
-		const remaining = current.filter((_line, index) => !valid.includes(index));
+		const removedBefore = copy ? 0 : valid.filter((index) => index < to).length;
+		const remaining = copy
+			? [...current]
+			: current.filter((_line, index) => !valid.includes(index));
 		let target = Math.max(0, Math.min(remaining.length, to - removedBefore));
 
 		const movingIds: string[] = [];
@@ -1033,7 +1087,23 @@
 			target = snapOutsideRun(remaining, target, destination);
 			destination = undefined;
 		}
+		// A copied section gets a fresh instance id (same group id), so it stays a
+		// linked twin of the original and edits to either update both.
+		const copyInstances: Record<string, string> = {};
 		const placed = moving.map((ref) => {
+			if (copy) {
+				if (destination) return { ...ref, group: destination };
+				if (ref.group && wholeRunMoved(current, valid, ref.group.id)) {
+					if (!copyInstances[ref.group.id]) copyInstances[ref.group.id] = newInstanceId();
+					return { ...ref, group: { ...ref.group, instance: copyInstances[ref.group.id] } };
+				}
+				return {
+					session_id: ref.session_id,
+					take_id: ref.take_id,
+					line_index: ref.line_index,
+					data: ref.data
+				};
+			}
 			if (destination) return { ...ref, group: destination };
 			const id = ref.group?.id;
 			if (id && !wholeRunMoved(current, valid, id)) {
@@ -1047,7 +1117,8 @@
 			return ref;
 		});
 		remaining.splice(target, 0, ...placed);
-		saveLines(remaining, destination?.id ?? placed[0]?.group?.id, target);
+		const sources = copy ? undefined : changedGroups(current, valid);
+		saveLines(remaining, destination?.id ?? placed[0]?.group?.id, target, sources);
 	}
 
 	function onScrapbookDrop(event: DragEvent) {
@@ -1643,6 +1714,7 @@
 								onDropLines={(refs, index, group) => addLinesAt(refs as LineRef[], index, group)}
 								onMoveLines={moveLines}
 								onRemove={removeLineAt}
+								onRemoveSelected={removeLinesAt}
 								onRemoveGroup={removeGroupAt}
 								onLocateLine={locateScrapbookLine}
 								onGroupLines={groupScrapbookLines}
